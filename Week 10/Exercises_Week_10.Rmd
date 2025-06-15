@@ -1,0 +1,543 @@
+---
+title: "BIO-463: Single-cell RNA-sequencing data (II)"
+author: "Raphaëlle Luisier and Lisa Fournier, Idiap Research Institute"
+date: "April 2024"
+output:
+  html_document:
+    theme: paper
+#paper readable
+    highlight: monochrome
+    #code_folding: hide
+    toc: true
+    toc_depth: 2
+#    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache =TRUE)
+knitr::opts_chunk$set(fig.width=16, fig.height=10, figure.align = "center") 
+rm(list = ls())
+
+
+if (!require("BiocManager", quietly = TRUE))
+  BiocManager::install("BiocManager")
+if (!require("DESeq2", quietly = TRUE))
+  BiocManager::install("DESeq2")
+library("DESeq2")
+if (!require("ape", quietly = TRUE))
+  BiocManager::install("ape")
+library("ape")
+if (!require("limma", quietly = TRUE))
+  BiocManager::install("limma")
+library("limma")
+if (!require("geneplotter", quietly = TRUE))
+  BiocManager::install("geneplotter")
+library("geneplotter")
+if (!require("gprofiler2", quietly = TRUE))
+  BiocManager::install("gprofiler2")
+library("gprofiler2")
+if (!require("edgeR", quietly = TRUE))
+  BiocManager::install("edgeR")
+library("edgeR")
+if (!require("AMR", quietly = TRUE))
+  BiocManager::install("AMR")
+library("AMR")
+if (!require("Seurat", quietly = TRUE))
+  BiocManager::install("Seurat")
+library("Seurat")
+if (!require("dplyr", quietly = TRUE))
+  install.packages("dplyr")
+library("dplyr")
+if (!require("patchwork", quietly = TRUE))
+  BiocManager::install("patchwork")
+library("patchwork")
+if (!require("Matrix", quietly = TRUE))
+  BiocManager::install("h")
+library("Matrix")
+if (!require("ggplot2", quietly = TRUE))
+  BiocManager::install("ggplot2")
+library("ggplot2")
+if (!require("SIMLR", quietly = TRUE))
+  BiocManager::install("SIMLR")
+library("SIMLR")
+if (!require("plotly", quietly = TRUE))
+  BiocManager::install("plotly")
+library("plotly")
+
+
+```
+
+# Introduction to the data-set 
+In this tutorial, we will analyze single-cell RNA sequencing data from [Ho et. al, Genome Research, 2018](https://www.ncbi.nlm.nih.gov/pubmed/30061114). They are derived from 451Lu melanoma cell line in two different conditions: 1) parental (untreated) and 2) resistant (treated for 6 weeks with BRAF inhibitors and yet proliferating hence called resistant): 
+<br>
+<br>
+
+<center>![**Schematic depicting the experimental protocol.**](./lisa_data_1.png){width=50%}
+</center>
+
+<br>
+
+Importantly the differenceS between these two cell populations are 1) the exposure to treatment (none versus chronic); 2) the resistance that emerges from the treatment. Hence these two variables (treatment and resistance) are confounded by the experimental set-up. This tutorial is built on the [Seurat package](https://satijalab.org/seurat/); you can refer to their vignettes for more details about the functions.  
+
+Data required for this tutorial can be dowloaded from Zenodo: https://zenodo.org/records/11088511
+
+
+
+# Alternative polyadenylation analysis
+The analysis of alternative 3' UTR usage is based on pipeline previously published (Andreassi et al, 2021) and further improved by Lisa Fournier (TA). 
+
+```{r load_APA_matrix,eval=TRUE}
+apa_data <- read.csv("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 10/11088511/APA_table.csv")
+
+#Data: 
+# apa_matrix       : 11232 x 9 table; the columns are:
+  # gene: gene name
+  # proximal_id: the name of the proximal 3' UTR isoform of the pair (Ip)
+  # proximal_length: length (nt) of the proximal 3' UTR isoform (Ip)
+  # proximal_occurence_parental: parental pseudo-bulk count for the proximal isoform (sum over all parental cells)
+  # proximal_occurence_resistant: resistant pseudo-bulk count for the proximal isoform (sum over all resistant cells)
+  # distal_id: the name of the distal 3' UTR isoform of the pair (Id)
+  # distal_length: length (nt) of the distal 3' UTR isoform (Id)
+  # distal_occurence_parental: parental pseudo-bulk count for the distal isoform (sum over all parental cells)
+  # distal_occurence_resistant :resistant pseudo-bulk count for the distal isoform (sum over all resistant cells)
+mycols <- c("#6699FF", "#CC33CC")
+
+```
+
+## Calculate PUD and RUD in each sample
+We will first calculate the relative proximal usage as well as the log2FC between the distal and the proximal (RUD); both values are relevant when identifying shifts in 3' UTR. These values are calculated for each sample. We can first calculate the PUD and RUD scores using the following formula: $PUD=Ip/(Ip+Id)$ and $RUD=log2(Ip/Id)$.
+<center>
+![*Examples of PUD with either PUD<0.5 (**left**; distal 3' UTR predominantly expressed) or PUD>0.5 (**right**; proximal predominantly expressed).*](./PUD_examples.png){width=50%}
+</center>
+
+
+```{r eval_RUD_PUD,warning=FALSE,eval=TRUE,fig.width=8, fig.height=5}
+#Calculate PUD and RUD for each condition
+apa_data <- apa_data %>%
+    mutate(pud_parental = proximal_occurence_parental / (proximal_occurence_parental + distal_occurence_parental))
+apa_data <- apa_data %>%
+    mutate(pud_resistant = proximal_occurence_resistant / (proximal_occurence_resistant + distal_occurence_resistant))
+
+apa_data <- apa_data %>%
+    mutate(rud_parental = log2(proximal_occurence_parental / distal_occurence_parental))
+
+apa_data <- apa_data %>%
+    mutate(rud_resistant = log2(proximal_occurence_resistant / distal_occurence_resistant))
+
+# Drop the rows with infinite RUD values for the plots
+apa_data <- apa_data[is.finite(apa_data$rud_parental), ]
+apa_data <- apa_data[is.finite(apa_data$rud_resistant), ]
+
+
+# plot the PUD distributions
+layout(matrix(ncol=3,nrow=2,c(1,1,3,2,2,4),byrow = TRUE))
+
+multidensity(list(parental=apa_data$pud_parental,resistant=apa_data$pud_resistant),col=mycols, las=1, main="PUD", xlab="PUD")
+grid()
+multidensity(list(parental=apa_data$rud_parental,resistant=apa_data$rud_resistant),col=mycols, las=1, main="RUD", xlab="RUD")
+grid()
+boxplot(apa_data$pud_parental, apa_data$pud_resistant, col=mycols, names=c("parental", "resistant"),las=1,frame=FALSE)
+result <- wilcox.test(apa_data$pud_parental, apa_data$pud_resistant)
+title(paste("P=", format(result$p.value,scientific=TRUE,digit=2)))
+
+boxplot(apa_data$rud_parental, apa_data$rud_resistant, col=mycols, names=c("parental", "resistant"), outline=FALSE,las=1,frame=FALSE)
+result <- t.test(apa_data$rud_parental, apa_data$rud_resistant)
+title(paste("P=", format(result$p.value,scientific=TRUE,digit=2)))
+
+df <- data.frame(type=c(rep("parental",nrow(apa_data)),rep("resistant",nrow(apa_data))),
+                 pud=c(apa_data$pud_parental,apa_data$pud_resistant),
+                 rud=c(apa_data$rud_parental,apa_data$rud_resistant))
+```
+The PUD distributions are bimodal. Therefore, due to the non-normality of the data, to compare them we will use a non-parametric test: the Wilcoxon test.
+Concerning the RUD, the data are normal. We therefore use the Student t-test.
+
+## Differential APA analysis
+We can now identify the genes exhibiting changes in 3' UTR usage by comparing their PUD between resistant and parental. P-values are obtained using the Fisher count test on the raw read count and changes are identified when $\Delta PUD >0.15$ or $\Delta PUD <(-0.15)$ and $P-value<0.01$.
+```{r identifiy_apa_events,warning=FALSE,eval=TRUE,fig.width=2, fig.height=3}
+#Calculate dPUD and dRUD
+
+apa_data <- apa_data %>%
+    mutate(dpud = pud_resistant - pud_parental )
+
+apa_data <- apa_data %>%
+    mutate(drud = rud_resistant - rud_parental )
+
+#Counts to compute the fisher tests
+df_for_fisher = round(apa_data[, c("proximal_occurence_parental", "proximal_occurence_resistant", "distal_occurence_parental", "distal_occurence_resistant")])
+# Apply Fisher's Test to each row
+results <- apply(df_for_fisher, 1, function(x) {
+  # Create a matrix for each row
+  mat <- matrix(as.numeric(x), nrow = 2)
+  
+  # Perform Fisher's Test
+  fisher.test(mat)$p.value
+})
+
+apa_data$p_value <- results
+apa_data$fdr     <- p.adjust(apa_data$p_value,method="fdr")
+
+# Selection of differential 3' UTR usage
+is_sig <- apa_data$fdr < 0.01
+dist <- (apa_data$dpud <= (-0.15) & apa_data$drud <= (-1))
+short <- (apa_data$dpud >= (0.15) & apa_data$drud >= 1)
+
+sel_distal   <- is_sig & dist
+sel_proximal <- is_sig & short
+
+```
+
+```{r plot_dAPA,warning=FALSE,eval=TRUE,fig.width=4, fig.height=4}
+# Make a nice plot
+coldiff <- c("grey",rgb(0,0,0,0.15))
+colsA <- c("#81A4D6","#2D598E","#083872")
+colsB <- c("#AE73B1","#79387C","#57055B")
+
+
+plot(apa_data[,c("pud_parental","pud_resistant")],pch=19,col=rgb(0,0,0,0.1),cex=0.3,las=1,frame=FALSE,xlab="Ip/(Ip+Id) [parental]",ylab="Ip/(Ip+Id) [resistant]")
+points(apa_data[sel_proximal,c("pud_parental","pud_resistant")],pch=19,col=colsA[1],cex=0.3)
+text(x=0.6,y=1.0,labels=paste(sum(sel_proximal),"proximal-to-distal shifts in resistant"),cex=0.6,col=colsA)
+points(apa_data[sel_distal,c("pud_parental","pud_resistant")],pch=19,col=colsB[1],cex=0.3)
+text(x=0.6,y=0.0,labels=paste(sum(sel_distal),"distal-to-proximal shifts in resistant"),cex=0.6,col=colsB)
+```
+
+# Cell clustering and cell type annotation
+## Load the normalised data
+For details how to produce the data, please refer to the exercises of week 9. You are free the test the different normalisation methods which are all included in the R object.
+```{r load_data,warning=FALSE, cache=FALSE}
+load("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 10/11088511/normalised_seurat_objects.RData")
+#Seurat objects:
+#GE : raw data
+#GE_log : log-normalise
+#GE_clr : CLR normalisation
+#GE_rc  : RC normalisation
+#GE_sct : SCTtransformed
+#GE_qn  : quantile normalsied
+
+```
+
+
+## Dimensionality reduction
+Prior to unsupervised clustering, dimensionality reduction is often applied on the most informative genes/features. As performed in week 9, we can use different methods for this task.
+
+## Identification of highly variable genes (feature selection)
+Selection of top 1000 variable genes.
+```{r most_variables_log,warning=FALSE,eval=TRUE,warning=FALSE,fig.width=12, fig.height=4}
+layout(matrix(ncol=2,nrow=1,c(1:2),byrow = TRUE))
+#Identify top 10'000 genes
+GE_log <- FindVariableFeatures(GE_log, selection.method = "vst", nfeatures = 10000)
+```
+
+
+## PCA, t-SNE and UMAP
+Prior performing the PCA we first need to scale and center the genes.
+```{r reduction_dim, warning=FALSE,eval=TRUE,warning=FALSE,fig.width=10, fig.height=8, cache=FALSE}
+layout(matrix(ncol=3,nrow=2,c(1:6),byrow = TRUE))
+# Scale and Center gene features
+GE_log    <- ScaleData(GE_log, features =rownames(GE_log))
+#Run PCA
+GE_log    <- RunPCA(GE_log, features = VariableFeatures(object = GE_log))
+#Run t-SNE
+GE_log    <- RunTSNE(GE_log, dims = 1:10,perplexity=10)
+#Run UMAP
+#GE_log    <- RunUMAP(GE_log, dims = 1:10,n.neighbors=5,min.dist=0.4,metric="man")
+```
+PCA plot:
+```{r PCA_plot_Log, warning=FALSE,eval=TRUE,warning=FALSE,fig.width=5, fig.height=3, cache=FALSE}
+pt<-DimPlot(GE_log, reduction = "pca", group.by = "treatment", pt.size=1, cols = mycols,dims = c(1, 2),alpha=0.2) +ggtitle("PCA")
+pt
+```
+
+t-SNE plot:
+```{r tSNE_plot_Log, warning=FALSE,eval=TRUE,warning=FALSE,fig.width=5, fig.height=3, cache=FALSE}
+pt<-DimPlot(GE_log, reduction = "tsne", group.by = "treatment", pt.size=1, cols = mycols,dims = c(1, 2),alpha=0.2) +ggtitle("t-SNE")
+pt
+```
+
+
+```{r UMAP_plot, warning=FALSE,eval=TRUE,warning=FALSE,fig.width=10, fig.height=8,eval=FALSE, cache=FALSE}
+
+pt<-DimPlot(GE_log, reduction = "umap", group.by = "treatment", pt.size=1, dims = c(1, 2), cols = mycols,alpha=0.2)+ggtitle("UMAP")
+pt
+```
+
+### scTransform
+This method transforms the counts using the Pearson residuals of a probabilistic model. However even scTransform leads to undesirable biases that can mask true signals and upweight technical artifacts. One of the most popular method for count-based modeling. The idea behind scTransform is to apply PCA to the matrix of Pearson residuals obtained by fitting negative binomial GLMs to the count matrix $Y$. Specifically for each row $i$ scTransform fits the following model to
+data $Y_{i1},\cdot\cdot\cdot,Y_{iJ}$: $Y_{ij}\sim NegBinom (\mu_{ij},\alpha_i)$ and $\log \mu_{ij}=\beta_{0i}+\beta_{1i}\log(S_j)$.
+
+### scGBM
+It is known that fundamental issues can arise from the commonly used approach of running PCA on $\log(1+x)$ transformed scRNA-seq data. For instance, [(Townes et al. (2019))](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1861-6) showed that the first principal component is strongly correlated with the number of zeros per cell, even on null data. Methods using count models have been developed to address these issues, however, we find that the current leading approaches still have significant limitations.
+
+While most dimensionality reduction approaches apply a transformation to the count matrix followed by principal components analysis (PCA) or any other type, it is known that such approach  can induce spurious heterogeneity and mask true biological variability. An alternative approach is to directly model the counts. Some methods perform dimensionality reduction directly using a probabilistic model of the count data matrix.These methods can avoid the artifactual biases of simple transformations and, further, can provide principled uncertainty quantification for downstream analyses and visualization. These include GLM-PCA, which models the entries of the count matrix using a Poisson or negative-binomial distribution and estimates latent factors in the log space. However GLM-PCA suffers from slow runtime and convergence issues on single-cell datasets with millions of cells.
+
+scGBM is a novel method for model-based dimensionality reduction of scRNA-seq data using a Poisson bilinear model. You can access the preprint [here](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10168202/). They introduce a fast estimation algorithm to fit the model using iteratively reweighted singular value decompositions. Furthermore, scGBM quantifies the uncertainty in each cell’s latent position and leverages these uncertainties to assess the confidence associated with a given cell clustering. Starting from the same underlying model as in GLM-PCA however with a new estimation algorithm that is faster than existing approaches.
+
+
+```{r scGBM,eval=FALSE}
+if (!require("devtools", quietly = TRUE))
+  install.packages("devtools")
+library("devtools")
+if (!require("scGBM", quietly = TRUE))
+  devtools::install_github("phillipnicol/scGBM")
+library("scGBM")
+
+#https://github.com/phillipnicol/scGBM
+set.seed(1126490984)
+#Run scGBM with latent factors
+out                  <- scGBM::gbm.sc(as.matrix(GE@assays$RNA$counts),M=10)# M is the number of latent factors
+#out.proj             <- scGBM::gbm.sc(as.matrix(GE@assays$RNA$counts),M=2,subset=100,ncores=8) ; #
+colnames(out$scores) <- 1:10
+GE[["gbm"]] <- CreateDimReducObject(embeddings=out$scores,key="GBM_")
+
+save(list=c("out","GE"),file="./results_scGBM.RDtata")
+
+```
+
+```{r load_GBM, cache=FALSE}
+load("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 10/11088511/results_scGBM.RDtata")
+```
+
+```{r GBM_plots, warning=FALSE,eval=TRUE,warning=FALSE,fig.width=10, fig.height=8}
+pt <- DimPlot(GE, reduction = "gbm", group.by = "treatment", pt.size=1, cols = mycols, dims = c(1, 2))+ggtitle("GBM")
+pt
+```
+
+
+## Clustering
+Seurat applies a graph-based clustering approach, building upon initial strategies in (Macosko et al). First, a KNN graph based on the euclidean distance in PCA space in constructed, and the edge weights between any two cells are refined based on the shared overlap in their local neighborhoods (Jaccard similarity). This step is performed using the FindNeighbors() function, and takes as input the previously defined dimensionality of the dataset (first 10 PCs).
+
+To cluster the cells, modularity optimization techniques such as the Louvain algorithm (default) or SLM [SLM, Blondel et al., Journal of Statistical Mechanics] are applied, to iteratively group cells together, with the goal of optimizing the standard modularity function. The FindClusters() function implements this procedure, and contains a resolution parameter that sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters. The authors of Seurat found that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. Optimal resolution often increases for larger datasets. 
+
+### Seurat
+```{r findNeighbour, warning=FALSE,eval=TRUE,fig.width=6, fig.height=6, cache=FALSE}
+GE_log <- FindNeighbors(GE_log, dims = 1:10)
+GE_log <- FindClusters(GE_log, resolution = 0.08)
+DimPlot(GE_log, reduction = "tsne")
+```
+
+It is now possible to extract all cells originating from one cluster:
+```{r,eval=FALSE, cache=FALSE}
+# Look at the IDs of the cells in the cluster 8
+cluster2 <- subset(GE_log, subset = seurat_clusters == 2)
+colnames(cluster2)
+```
+
+### scGMB
+```{r scGBM_cluster, warning=FALSE,eval=TRUE,warning=FALSE,fig.width=6, fig.height=4,eval=FALSE, cache=FALSE}
+GE                   <- FindNeighbors(GE,reduction = "gbm")
+GE                   <- FindClusters(GE)
+DimPlot(GE, reduction = "gbm")
+```
+
+
+## Differential expression analysis between clusters
+Here the goal is to find markers that define clusters via differential expression (DE). You can either:
+- identify positive and negative markers of a single cluster compared to all other cells
+- test groups of clusters vs. each other, or against all cells.
+```{r find_markers_tSNE, warning=FALSE,eval=TRUE,fig.width=4, fig.height=6, cache=FALSE}
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+# This cell takes ~15-20minutes to run
+GE_log.markers <- FindAllMarkers(GE_log, only.pos = TRUE)
+GE_log.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+GE_log.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 20) %>%
+    ungroup() -> top8
+DoHeatmap(GE_log, features = top8$gene) + NoLegend()
+```
+
+We can perform gene enrichment analysis on the top 300 u-regulated genes in cluster n0.2:
+
+```{r enrichment,warning=FALSE,eval=TRUE,fig.width=10, fig.height=3,cache=FALSE}
+# print the top marker genes for cluster 2
+gs<-head(GE_log.markers[GE_log.markers$cluster == 2,], n=300)$gene
+
+gostres_diff <- gost(query =gs, 
+                organism = "hsapiens", ordered_query = FALSE, 
+                multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                measure_underrepresentation = FALSE, evcodes = TRUE, 
+                user_threshold = 0.05, correction_method = "g_SCS", 
+                domain_scope = "annotated", custom_bg = NULL, 
+                numeric_ns = "", as_short_link = FALSE,sources=c("GO:BP", "GO:MF","KEGG","REAC"))
+gostplot(gostres_diff, capped = FALSE, interactive = TRUE)
+```
+
+
+# Cell type identification
+```{r,eval=FALSE, cache=FALSE}
+if (!require("HGNChelper", quietly = TRUE))
+  install.packages("HGNChelper")
+library("HGNChelper")
+if (!require("openxlsx", quietly = TRUE))
+  install.packages("openxlsx", dependencies = TRUE)
+library("openxlsx")
+```
+
+
+# Assignment
+
+## Task 1 (1pt)
+In this task, use sctype for cell type annotation (see the documentation here: https://github.com/IanevskiAleksandr/sc-type).
+The expected output is a plot of the clusters with cell type annotation. **You are free to use the dimensionality reduction technique that you want among the ones tested above; and to choose which tissue to test.**
+
+```{r sctype,warning=FALSE,fig.width=10, fig.height=3, eval=TRUE, cache=FALSE}
+
+#https://github.com/IanevskiAleksandr/sc-type
+
+# load gene set preparation function
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R")
+# load cell type annotation function
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
+# load wrapper function 
+source("https://raw.githubusercontent.com/kris-nader/sc-type/master/R/sctype_wrapper.R"); 
+
+# you are free to load any other script that you find relevant or that you want to test
+
+### ADD YOUR CODE HERE ###
+library(openxlsx)
+library(HGNChelper)
+db_ <- "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx";
+
+GE_log <- run_sctype(GE_log, known_tissue_type="Immune system", custom_marker_file="https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_short.xlsx",name="sctype_classification")
+
+
+### Idea of what you could be the output:
+DimPlot(GE_log, reduction = "tsne", label = TRUE, repel = TRUE, group.by = 'sctype_classification')  
+
+```
+We have a melanoma cell line (which carries the V600E Braf mutation) that corresponds to
+the "parental" cell line, and the same cell line is treated for 4
+weeks with vemurafenib, leading to resistance and thus these treated
+cells correspond to the "resistant" cell line.
+
+When doing the clustering we can see that there are 3 clusters, which
+correspond to the resistant cells, the parental cells and perhaps some
+intermediate state, which could be the ones that drive the transition
+from parental to resistant (perhaps it could be a population of cancer
+stem cells that are responsible for the resistance). 
+
+In this case it would be more relevant to do a
+signature annotation for different pathways or cancer hallmarks 
+rather than a cell type annotation, since the three subgroups are still melanocytes. However, the annotation is not correct, since the marker genes do not correspond to the right tissue type. We will try to annotate correctly the cells in task 2.
+
+
+## Task 2 - BONUS (0.25 pt)
+Test another cell type annotation method. You can choose among the methods below (scGPT, deCS and scAnnotate) or propose an alternative method.
+
+
+```{r}
+install.packages("readxl")
+
+```
+
+```{r}
+library(readxl)
+#DATA FROM Wouters, J., Kalender-Atak, Z., Minnoye, L. et al. Robust gene expression programs underlie recurrent cell states and phenotype switching in melanoma. Nat Cell Biol 22, 986–998 (2020). https://doi.org/10.1038/s41556-020-0547-3
+#SUPPLEMENTARY TABLES, SHEET 4: GENE SIGNATURES FROM MELANOCYTES, MESENCHYMAL AND INTERMEDIATE CELLS
+melanocytic_cell_state <- read_excel("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 10/11088511/melanocytic_cell_state.xlsx",col_names = FALSE)
+mesenchymal_cell_state <- read_excel("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 10/11088511/mesenchymal_cell_state.xlsx",col_names = FALSE)
+intermediate_cell_state <- read_excel("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 10/11088511/intermediate_cell_state.xlsx",col_names = FALSE)
+```
+
+```{r}
+# Extract gene names for cluster 1
+cluster_0_genes <- GE_log.markers[GE_log.markers$cluster == 0, ]$gene
+
+# Extract gene names for cluster 1
+cluster_1_genes <- GE_log.markers[GE_log.markers$cluster == 1, ]$gene
+
+# Extract gene names for cluster 2
+cluster_2_genes <- GE_log.markers[GE_log.markers$cluster == 2, ]$gene
+
+#we look for the intercept
+# Find common elements for each cluster
+#cluster 0
+common_genes_cluster0_vs_melanocytes <- intersect(cluster_0_genes, melanocytic_cell_state)
+common_genes_cluster0_vs_mesenchymal <- intersect(cluster_0_genes, mesenchymal_cell_state)
+common_genes_cluster0_vs_intermediate <- intersect(cluster_0_genes, intermediate_cell_state)
+# Count the number of matches
+num_matches_0mel <- length(common_genes_cluster0_vs_melanocytes)
+num_matches_0mes <- length(common_genes_cluster0_vs_mesenchymal)
+num_matches_0int <- length(common_genes_cluster0_vs_intermediate)
+# Output the result
+cat("The number of matches of cluster 0 with the melanocytic signature is",num_matches_0mel,"\n")
+cat("The number of matches of cluster 0 with the mesenchymal signature is",num_matches_0mes,"\n")
+cat("The number of matches of cluster 0 with the intermediate signature is",num_matches_0int,"\n")
+#cluster 1
+common_genes_cluster1_vs_melanocytes <- intersect(cluster_1_genes, melanocytic_cell_state)
+common_genes_cluster1_vs_mesenchymal <- intersect(cluster_1_genes, mesenchymal_cell_state)
+common_genes_cluster1_vs_intermediate <- intersect(cluster_1_genes, intermediate_cell_state)
+##
+num_matches_1mel <- length(common_genes_cluster1_vs_melanocytes)
+num_matches_1mes <- length(common_genes_cluster1_vs_mesenchymal)
+num_matches_1int <- length(common_genes_cluster1_vs_intermediate)
+# Output the result
+cat("The number of matches of cluster 1 with the melanocytic signature is",num_matches_1mel,"\n")
+cat("The number of matches of cluster 1 with the mesenchymal signature is",num_matches_1mes,"\n")
+cat("The number of matches of cluster 1 with the intermediate signature is",num_matches_1int,"\n")
+#cluster 2
+common_genes_cluster2_vs_melanocytes <- intersect(cluster_2_genes, melanocytic_cell_state)
+common_genes_cluster2_vs_mesenchymal <- intersect(cluster_2_genes, mesenchymal_cell_state)
+common_genes_cluster2_vs_intermediate <- intersect(cluster_2_genes, intermediate_cell_state)
+# Count the number of matches
+num_matches_2mel <- length(common_genes_cluster2_vs_melanocytes)
+num_matches_2mes <- length(common_genes_cluster2_vs_mesenchymal)
+num_matches_2int <- length(common_genes_cluster2_vs_intermediate)
+# Output the result
+cat("The number of matches of cluster 2 with the melanocytic signature is",num_matches_2mel,"\n")
+cat("The number of matches of cluster 2 with the mesenchymal signature is",num_matches_2mes,"\n")
+cat("The number of matches of cluster 2 with the intermediate signature is",num_matches_2int,"\n")
+```
+
+```{r}
+new.cluster.ids <- c("melanocytic cell state", "melanocytic cell state", "melanocytic cell state")
+
+names(new.cluster.ids) <- levels(GE_log)
+GE_log <- RenameIdents(GE_log, new.cluster.ids)
+DimPlot(GE_log, reduction = "tsne", label = TRUE, repel = TRUE,pt.size = 1,label.size = 6)
+```
+
+
+We can observe that the cell type that had
+more matches was the melanocytic state, giving us the correct cell type.
+
+```
+
+### Using gptCellType
+```{r gptCellType, eval=FALSE}
+#https://github.com/Winnie09/GPTCelltype
+#https://www.nature.com/articles/s41592-024-02235-4
+#install.packages("openai")
+#remotes::install_github("Winnie09/GPTCelltype")
+library("openai")
+library("GPTCelltype")
+#You need to add a payment plan to get there 
+#Sys.setenv(OPENAI_API_KEY = 'put your key here')
+
+```
+
+### Using deCS
+```{r deCS,eval=FALSE}
+#https://github.com/bsml320/deCS
+#https://academic.oup.com/gpb/article/21/2/370/7585489?login=false
+
+
+
+```
+
+### scAnnotate
+```{r scAnnotate,eval=FALSE}
+#https://cran.r-project.org/package=scAnnotate
+#https://academic.oup.com/bioinformaticsadvances/article/3/1/vbad030/7076619?login=false
+```
+
+
+
+
+
+

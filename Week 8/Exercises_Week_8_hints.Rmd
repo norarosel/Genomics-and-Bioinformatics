@@ -1,0 +1,735 @@
+---
+title: "BIO-463: Alternative Splicing Analysis"
+author: "Raphaëlle Luisier, Idiap Research Institute"
+date: "April 2024"
+output:
+  html_document:
+    theme: paper
+#paper readable
+    highlight: monochrome
+    code_folding: hide
+    toc: true
+    toc_depth: 2
+#    toc_float: true
+    number_sections: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache =TRUE)
+knitr::opts_chunk$set(fig.width=16, fig.height=10, figure.align = "center") 
+rm(list = ls())
+
+
+if (!require("BiocManager", quietly = TRUE))
+  BiocManager::install("BiocManager")
+if (!require("DESeq2", quietly = TRUE))
+  BiocManager::install("DESeq2")
+library("DESeq2")
+if (!require("ape", quietly = TRUE))
+  BiocManager::install("ape")
+library("ape")
+if (!require("limma", quietly = TRUE))
+  BiocManager::install("limma")
+library("limma")
+if (!require("geneplotter", quietly = TRUE))
+  BiocManager::install("geneplotter")
+library("geneplotter")
+if (!require("gprofiler2", quietly = TRUE))
+  BiocManager::install("gprofiler2")
+library("gprofiler2")
+if (!require("edgeR", quietly = TRUE))
+  BiocManager::install("edgeR")
+library("edgeR")
+if (!require("AMR", quietly = TRUE))
+  BiocManager::install("AMR")
+library("AMR")
+
+
+```
+
+
+# Load the data {.tabset}
+The high-throughput poly(A) RNA-seq data used in this notebook are described in [Neeves et al, Brain (2022)](https://pubmed.ncbi.nlm.nih.gov/33693641/). They are derived from nuclear and cytoplasmic fractions of human induced pluripotent stem cells (hiPSC; day 0), neural precursors (NPC; day 3 and day 7), ‘patterned’ precursor motor neurons (ventral spinal cord; pMN; day 14), post-mitotic but electrophysiologically immature motor neurons (MN; day 22), and electrophysiologically active MNs (mMNs; day 35). 
+
+![Schematic depicting the iPSC differentiation strategy for motor neurogenesis. Arrows indicate sampling time-points in days when cells were fractionated into nuclear and cytoplasmic compartments prior to deep (polyA) RNA-sequencing. Four iPSC clones were obtained from four different healthy controls and three iPSC clones from two ALS patients with VCP mutations: R155C and R191Q; hereafter termed VCPmu. Induced-pluripotent stem cells (iPSC); neural precursors (NPC); “patterned” precursor motor neurons (ventral spinal cord; pMN); post-mitotic but electrophysiologically inactive motor neurons (MN); electrophysiologically active MNs (mMN).](./protocol.png)
+The gene expression count data was obtained from [Kallisto](https://pachterlab.github.io/kallisto/about) (Bray et al., 2016) using the Gencode hg38 release Homo sapiens transcriptome. The quantification of alternative splicing was performed using [VAST-TOOLS](https://github.com/vastgroup/vast-tools) (Tapial et al., 2017). The data required for this practical session can be downloaded from [Zenodo](https://zenodo.org/records/10964586) (**please note this is a different version of the one in the previous module**).
+
+
+```{r load_data,warning=FALSE,fig.width=8, fig.height=4}
+load("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/Week 8/AS_GE_data.RData")
+
+#Data: 
+# info                    : data-frame of information for the nuclear samples
+# myE_gen                 : normalized gene expression count matrix of the CTRL nuclear fraction quantile-normalized
+# dat_diff_time_nuc_ctrl  : data-frame with different AS analysis for the nuclear compartment
+# dat_diff_time_cyto_ctrl : data-frame with different AS analysis for the cytoplasmic compartment
+# tab_psi                 : data frame with all events in VAST-TOOLS and their PSI values in each sample (`dat_diff_time_nuc_ctrl` and `dat_diff_time_cyto_ctrl` are data-frame containing the 'average' changes over time in splicing while `tab_psi` contains the PSI values for each individual samples)
+
+#PSI (Percentage spliced in) is the ratio of normalized read counts indicating inclusion of a transcript element over the total normalized reads for that event (both inclusion and exclusion reads). A PSI value of 0.8 for an exon skip event would indicate that the exon is included in approximately 80% of the transcripts in the sample. Changes in average PSI values when comparing groups of samples indicate a shift in splicing patters between the groups or a splice event.
+
+#Here I make some nice colors to facilitate the visualisation
+mygroup                <- factor(as.character(info$DIV),levels=c(0,3,7,14,22,35))
+mycols_days            <- c("#CCFF00","#33CC33","#669999","#6699FF","#3300FF","#CC33CC")
+names(mycols_days)     <- c(0,3,7,14,22,35)
+mycols                 <- unlist(lapply(info$DIV,function(Z)return(mycols_days[match(as.character(Z),names(mycols_days))])))
+```
+
+# Some useful functions for your analysis
+```{r some_useful functions,echo=TRUE,eval=TRUE}
+#Biological Pathway Gene Enrichment Analysis
+GO_analysis <- function(genes_list){
+  gostres_diff <- gost(query = genes_list, 
+                  organism = "hsapiens", ordered_query = FALSE, 
+                  multi_query = FALSE, significant = TRUE, exclude_iea = FALSE, 
+                  measure_underrepresentation = FALSE, evcodes = TRUE, 
+                  user_threshold = 0.05, correction_method = "g_SCS", 
+                  domain_scope = "annotated", custom_bg = NULL, 
+                  numeric_ns = "", as_short_link = FALSE,sources=c("GO:BP", "GO:MF","KEGG"))
+  gostplot(gostres_diff, capped = FALSE, interactive = TRUE)#please note this is going to create an interactive plot
+}
+
+#Create a venn diagram from two gene lists 
+## This is an example - not meant to run
+vennDiag <- function(genes_lists){
+  genes_comparisons <- do.call(what=cbind,args=lapply(genes_lists,function(Z)return(rownames(myE_gen)%in%Z)))
+  colnames(genes_comparisons)<-c("cond1","cond2")
+  vennDiagram(genes_comparisons,main="blasdfas")
+}
+
+#Plot PSI events over time in nuclear cyto fractions
+plotEventOverTime <- function(event="HsaINT0002504"){
+  toi     <- c("E.dPsi.d_3_0","E.dPsi.d_7_0","E.dPsi.d_14_0","E.dPsi.d_22_0","E.dPsi.d_35_0")
+  dat_nuc <- dat_diff_time_nuc_ctrl[match(event,dat_diff_time_nuc_ctrl$EVENT),match(toi,colnames(dat_diff_time_nuc_ctrl))]
+  dat_cyto<- dat_diff_time_cyto_ctrl[match(event,dat_diff_time_cyto_ctrl$EVENT),match(toi,colnames(dat_diff_time_cyto_ctrl))]
+  tempdat <- rbind(as.numeric(dat_nuc),as.numeric(dat_cyto))
+  rownames(tempdat)<-c("nuc","cyto")
+  colnames(tempdat)<- c("3","7","14","22","35")
+  tempdat[is.na(tempdat)]<-0
+  barplot(tempdat,beside=TRUE,las=1,ylab="dPSI",xlab="DIV",main=paste(tab_psi$GENE[match(event,tab_psi$EVENT)], "-", tab_psi$COORD[match(event,tab_psi$EVENT)]),col=c("#CC9C3D","#476DB4"))
+  legend("topleft",ncol=1,pch=15,col=c("#CC9C3D","#476DB4"),leg=c("nuc","cyto"),cex=0.7)
+  grid()
+}
+
+#To following function sort myvec in decreasing order and return their indexes:
+myidx<- sort(x=c(1:2000),index.return=TRUE,decreasing=TRUE)$ix
+                                                      
+```
+ 
+
+
+# Alternative splicing analysis 
+Let's first analyse the relative number of alternative splicing (AS) events exhibiting significant changes between the iPSC stage (DIV=0) and the NPC stage (DIV=14), and compare those between nuclear (`dat_diff_time_nuc_ctrl` data-table) and cytoplasmic fractions (`dat_diff_time_cyto_ctrl`). The schematic below shows the four main types of events we are going to look at. 
+<center>
+![*Schematic depicting the four different types of alternative splicing events we are going to study. Alternative 5' start site (Alt5); Alternative exon (AltEx); Alternative 3' end side (Alt3); intron retention (IR)*](./AS_events.png){width=65%}
+</center>
+
+
+Here is a summary of the column content which you can find at on Github repo of [VAST-TOOL](https://github.com/vastgroup/vast-tools):
+
+* **GENE** Official gene symbol.
+* **EVENT** VAST-DB event ID; (HsaEX for exons; HsaIR for intron; etc.)
+    + Species identifier: Hsa (Human), Mmu (Mouse), or Gga (Chicken);
+    + Type of alternative splicing event: alternative exon skipping (EX), retained intron (INT), alternative splice site donor choice (ALTD), or alternative splice site acceptor choice (ALTA). In the case of ALTD/ALTA, each splice site within the event is indicated (from exonic internal to external) over the total number of alternative splice sites in the event (e.g. HsaALTA0000011-1/2).
+    + Numerical identifier.
+* **COORD** Genomic coordinate of the alternative sequence.
+* **LENGTH** Length of the alternative sequence. In ALTD/ALTA events, the first splice site within each event has a length of 0 nt, by definition.
+* **FullCO** Full set of genomic coordinates of the alternative splicing event.
+* **COMPLEX** Type of event. NOTE: it is recomended that this column is not used for downstream analyses, and the users only use the EventID to define the type of AS: 
+    + Cassette exons/exon skipping events (EX) including S, C1, C2, C3, ANN
+    + Intron retention (INT)
+    + Alternative splice donors (ALTD)
+    + Alternative splice acceptors (ALTA)
+    + S, C1, C2, C3: exon skipping (EX) events 
+    + MIC: exon skipping (EX) events quantified by the microexon pipeline.
+    + IR: intron retention event.
+    + Alt3: ALTA events.
+    + Alt5: ALTD events.
+* **COMPLEX_short** Type of event merged into AltEx, IR, MIC, Alt3 and Alt5.
+* **COMPLEX_short** Type of event merged into AltEx, IR, MIC, Alt3 and Alt5.
+* **E.dPsi** indicates the expected differences in Percent Spliced In (PSI) between two conditions of interest
+* **MV.dPsi** is the minimal value (MV) of difference between PSI in group A and PSI in group B $|\Delta$PSI$|$ at 0.95 i.e. there is a 0.95 probability that $|\Delta$PSI$|$ is greater than MV. This is illustrated in the next figure.
+<center>
+![*(**Left**) Shows the two joint posterior distributions over PSI, and the point estimates for each replicate plotted as points below the histograms. (**Right**) The y-axis represents the probability of $\Delta$PSI being greater than some magnitude value of $x$ (shown on the x-axis). The red line indicates the maximal value of x where P($\Delta$PSI$> x) > -r$, or the 0.95 default.*](./DiffExample.png)
+</center>
+
+## Get familiar with your data
+First you always need to make sure you understand the format of your data, the content of the columns and the rows. Start by checking the dimensions of the data using `dim`, `nrow`, `ncol` functions. Then if the data-count table is not too large, you can use the `View` function to visualise and explore its content. Alternatively you can `print` a couple of rows. Here you need to understand the output from VAST-TOOLS. 
+```{r overview_of_the_daya,warning=FALSE}
+dim(tab_psi)
+print(colnames(tab_psi))
+
+dim(dat_diff_time_nuc_ctrl)
+print(colnames(dat_diff_time_cyto_ctrl))
+
+dim(dat_diff_time_cyto_ctrl)
+print(colnames(dat_diff_time_nuc_ctrl))
+```
+
+
+## Overview of the relative number of changes of specific types between nucleus and cytoplasm
+It is generally good to get an understanding of the type of events which are differentially spliced between two conditions. Pie-charts can be useful to visualise the relative abundances of events in each categories between different types of conditions. $\Delta$PSI>0 indicates inclusion while $\Delta$PSI<0 indicates skipping between two conditions. The default threshold of a difference in PSI is 15\%.
+
+Let's start by looking at the relative number of events with a threshold difference of 20\% between the iPSC stage (DIV=0) and the MN stage (DIV=35) in the nucleus: 
+
+
+```{r types_of_events_div35_nuc,warning=FALSE,fig.width=8, fig.height=2}
+col_events=c("#CD4599","#8C8C8C","#6ABD45","#4B5493","#FEC20F")
+names(col_events) <- names(table(dat_diff_time_nuc_ctrl$COMPLEX_short))
+par(mfrow=c(1,3),mar=c(1,1,2,1))
+pie(table(dat_diff_time_nuc_ctrl$COMPLEX_short),col=col_events)
+mtext(side=3,line=-1,text="All annotated events",cex=0.7)
+pie(table(dat_diff_time_nuc_ctrl$COMPLEX_short[dat_diff_time_nuc_ctrl$E.dPsi.d_35_0>0.2]),col=col_events)
+mtext(side=3,line=0,text="NUCLEUS -- DIV=35",cex=0.7)
+mtext(side=3,line=-1,text="dPSI>20%",cex=0.7)
+pie(table(dat_diff_time_nuc_ctrl$COMPLEX_short[dat_diff_time_nuc_ctrl$E.dPsi.d_35_0<(-0.2)]),col=col_events)
+mtext(side=3,line=-1,text="dPSI<(-20%)",cex=0.7)
+```
+
+And compare these with event distribution in cytoplasmic fractions:
+```{r types_of_events_div35_cyto,warning=FALSE,fig.width=8, fig.height=2}
+par(mfrow=c(1,3),mar=c(1,1,2,1))
+pie(table(dat_diff_time_cyto_ctrl$COMPLEX_short),col=col_events)
+mtext(side=3,line=-1,text="All annotated events",cex=0.7)
+pie(table(dat_diff_time_cyto_ctrl$COMPLEX_short[dat_diff_time_cyto_ctrl$E.dPsi.d_35_0>0.2]),col=col_events)
+mtext(side=3,line=0,text="CYTOPLASM --DIV=35",cex=0.7)
+mtext(side=3,line=-1,text="dPSI>20%",cex=0.7)
+pie(table(dat_diff_time_cyto_ctrl$COMPLEX_short[dat_diff_time_cyto_ctrl$E.dPsi.d_35_0<(-0.2)]),col=col_events)
+mtext(side=3,line=-1,text="dPSI<(-20%)",cex=0.7)
+```
+
+
+What are the key observations?
+
+## Comparisons of the AS changes detected in nucleus and cytoplasm over time
+Having found some differences at MN stages in relative distributions of included events between cyto and nuc (enrichment in nuclear fraction of IR), let's now test whether splicing patterns are similar in nucleus versus cytoplasm **over time**.
+
+```{r nuc_versus_cyto,warning=FALSE,fig.width=8, fig.height=4}
+pcc_events<- do.call(what=cbind,args=lapply(unique(dat_diff_time_cyto_ctrl$COMPLEX_short),function(EV)return(unlist(lapply(c("E.dPsi.d_3_0",   "E.dPsi.d_7_0" , "E.dPsi.d_14_0" , "E.dPsi.d_22_0" , "E.dPsi.d_35_0"),function(coln)return(cor(dat_diff_time_nuc_ctrl[dat_diff_time_nuc_ctrl$COMPLEX_short==EV,match(coln,colnames(dat_diff_time_nuc_ctrl))],dat_diff_time_cyto_ctrl[dat_diff_time_cyto_ctrl$COMPLEX_short==EV,match(coln,colnames(dat_diff_time_cyto_ctrl))],use = "complete")))))))
+colnames(pcc_events)<- unique(dat_diff_time_cyto_ctrl$COMPLEX_short)
+rownames(pcc_events)<-c("E.dPsi.d_3_0",   "E.dPsi.d_7_0" , "E.dPsi.d_14_0" , "E.dPsi.d_22_0" , "E.dPsi.d_35_0") 
+
+par(mfrow=c(1,1))
+barplot(pcc_events,beside=TRUE,col=unlist(lapply(colnames(pcc_events),function(Z)return(rep(col_events[match(Z,names(col_events))],5)))),las=1,ylim=c(0,1),ylab="Pearson Correlation Coefficient")
+```
+
+
+Let's now visualise these results, in particular the changes between NPC and MN stages in terms of alternative exon usage and intron retention:
+
+```{r nuc_versus_cyto_more,warning=FALSE,fig.width=8, fig.height=8}
+par(mfrow=c(2,2),mar=c(4,4,4,4))
+plot(dat_diff_time_nuc_ctrl$E.dPsi.d_14_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="IR"],dat_diff_time_cyto_ctrl$E.dPsi.d_14_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="IR"],pch=19,col=rgb(0,0,0,0.2),cex=0.5,xlab="nucleus",ylab="cytoplasm",main="",las=1)
+mtext(side=3,line=2,text="Intron Retention",cex=0.7)
+mtext(side=3,line=1,text="dPSI [DIV=0-->DIV=14]",cex=0.7)
+grid()
+abline(0,1,col="red",lty=2)
+mtext(side=3,line=0,text=paste("PCC=",round(cor(dat_diff_time_nuc_ctrl$E.dPsi.d_14_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="IR"],dat_diff_time_cyto_ctrl$E.dPsi.d_14_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="IR"],use = "complete"),digit=2)),cex=0.7)
+
+plot(dat_diff_time_nuc_ctrl$E.dPsi.d_14_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="EX"],dat_diff_time_cyto_ctrl$E.dPsi.d_14_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="EX"],pch=19,col=rgb(0,0,0,0.2),cex=0.5,xlab="nucleus",ylab="cytoplasm",main="",las=1)
+mtext(side=3,line=2,text="Alternative Exon",cex=0.7)
+mtext(side=3,line=1,text="dPSI [DIV=0-->DIV=14]",cex=0.7)
+mtext(side=3,line=0,text=paste("PCC=",round(cor(dat_diff_time_nuc_ctrl$E.dPsi.d_14_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="EX"],dat_diff_time_cyto_ctrl$E.dPsi.d_14_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="EX"],use = "complete"),digit=2)),cex=0.7)
+grid()
+abline(0,1,col="red",lty=2)
+
+plot(dat_diff_time_nuc_ctrl$E.dPsi.d_35_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="IR"],dat_diff_time_cyto_ctrl$E.dPsi.d_35_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="IR"],pch=19,col=rgb(0,0,0,0.2),cex=0.5,xlab="nucleus",ylab="cytoplasm",main="",las=1)
+mtext(side=3,line=2,text="Intron Retention",cex=0.7)
+mtext(side=3,line=1,text="dPSI [DIV=0-->DIV=35]",cex=0.7)
+mtext(side=3,line=0,text=paste("PCC=",round(cor(dat_diff_time_nuc_ctrl$E.dPsi.d_35_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="IR"],dat_diff_time_cyto_ctrl$E.dPsi.d_35_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="IR"],use = "complete"),digit=2)),cex=0.7)
+grid()
+abline(0,1,col="red",lty=2)
+
+plot(dat_diff_time_nuc_ctrl$E.dPsi.d_35_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="EX"],dat_diff_time_cyto_ctrl$E.dPsi.d_35_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="EX"],pch=19,col=rgb(0,0,0,0.2),cex=0.5,xlab="nucleus",ylab="cytoplasm",main="",las=1)
+mtext(side=3,line=2,text="Alternative Exon",cex=0.7)
+mtext(side=3,line=1,text="dPSI [DIV=0-->DIV=35]",cex=0.7)
+mtext(side=3,line=0,text=paste("PCC=",round(cor(dat_diff_time_nuc_ctrl$E.dPsi.d_35_0[dat_diff_time_nuc_ctrl$COMPLEX_short=="EX"],dat_diff_time_cyto_ctrl$E.dPsi.d_35_0[dat_diff_time_cyto_ctrl$COMPLEX_short=="EX"],use = "complete"),digit=2)),cex=0.7)
+grid()
+abline(0,1,col="red",lty=2)
+```
+ 
+If interested have a look at the role of **nuclear detention** of intron-retaining transcripts. 
+
+
+# Singular value decomposition (SVD)
+While hierarchical clustering might be dominated by some changes in few genes, other methods such as singular value decomposition (SVD) analysis can be instrumental in identifying independent biological pathways underlying changes in gene expression. It is also very appropriate for time-series analysis when variation is not linearly dependent on time.
+
+## Relevant functions for SVD analysis
+```{r useful_functions_SVD,warning=FALSE,eval=TRUE}
+#This function extract the fraction of variance per component as derived from SVD analysis
+#Input= SVD object 
+getFractionVariance<- function(mySVD){
+  return(mySVD$d*mySVD$d/sum(mySVD$d*mySVD$d))
+}
+
+#This function calculate the Shannon Entropy which indicates how well the information is spread among the principal components.
+#High value indicates information evenly distributed among components
+#Low value indicates most information/variance is captured by a single component
+#Takes as input the fraction of variance outputted from getFractionVariance
+getShannonEntropy <- function(pip)return(-1*sum(pip*log10(pip))/log10(length(pip)))
+
+#This function plots the fraction of variance captured by first N components.
+#pi=fraction of variance as obtained from getFractionVariance
+#dp=Shannon Entropy as obtained from getShannonEntropy
+#N=number of components to plot
+ScrePlot <- function(pi,dp,N=NA){
+  if(is.na(N)){
+  barplot(pi,las=1,cex.main=0.7,cex.axis=1.0,col="black")
+  }
+  else{
+    barplot(pi[c(1:N)],las=1,cex.main=0.7,cex.axis=1.0,col="black")
+  }
+  mtext(side = 1, line = 2, text ="principal components", col = "black",cex=0.7, font=1)
+  mtext(side = 2, line = 2, text ="Fraction of explained variance", col = "black",cex=0.7, font=1)
+  mtext(side = 3, line = -2, text = paste("Shannon Entropy = ",round(dp,digits=3)), col = "black",cex=0.7, font=1)
+}
+
+```
+
+## Prepare relevant matrices
+For this analysis we will focus on the nuclear samples and use the different types of data collected so far i.e. gene expression, PUD, IR and AltEx. A similar analysis can be done on the cytoplasmic fraction.
+
+```{r prepare_matrices, eval=TRUE,warning=FALSE,eval=TRUE}
+ge                <- myE_gen
+EX_nuc            <- as.matrix(tab_psi[which(tab_psi$COMPLEX_short=="EX"),match(colnames(myE_gen),colnames(tab_psi))])
+IR_nuc            <- as.matrix(tab_psi[which(tab_psi$COMPLEX_short=="IR"),match(colnames(myE_gen),colnames(tab_psi))])
+
+rownames(EX_nuc)  <- as.character(tab_psi$EVENT)[which(tab_psi$COMPLEX_short=="EX")]
+rownames(IR_nuc)  <- as.character(tab_psi$EVENT)[which(tab_psi$COMPLEX_short=="IR")]
+
+#You need to remove NA's and NaN for the unsupervised analysis
+tosel_ex          <- which(apply(is.na(EX_nuc),1,sum)==0&apply(is.nan(EX_nuc),1,sum)==0)
+tosel_ir          <- which(apply(is.na(IR_nuc),1,sum)==0&apply(is.nan(IR_nuc),1,sum)==0)
+EX_nuc            <- EX_nuc[tosel_ex,]
+IR_nuc            <- IR_nuc[tosel_ir,]
+```
+
+
+## Systematic removal of the first component: effect on GE matrix
+It is common in SVD analysis to remove the first component which captures noise == most variations from from systematic changes in basal gene expression between genes.
+
+```{r investigate_SVD,warning=FALSE,fig.width=12, fig.height=8}
+#SVD on the Gene Expression
+dat1         <- ge
+SVD_eset     <- svd(dat1)
+pi_1         <- getFractionVariance(mySVD=SVD_eset)
+dp_1         <- getShannonEntropy(pi_1)
+
+
+datm         <- dat1-SVD_eset$d[1]*(SVD_eset$u[,1]%*%t(SVD_eset$v[,1]))
+SVD_eset_GE  <- svd(datm)
+pi_2         <- getFractionVariance(mySVD=SVD_eset_GE)
+dp_2         <- getShannonEntropy(pi_2)
+
+
+par(mfrow=c(2,4))
+ScrePlot(pi_1,dp_1,N=NA)
+mtext(side=3,line=0,text="prior removing first component")
+#Effect on the sample distribution
+multidensity(dat1[,c(1,10,15,20)],main="prior filtering",las=1)
+boxplot(dat1,outline=FALSE)
+boxplot(t(dat1[c(1,4,10,44,69,1000,2000,4000),]),outline=FALSE,las=2,ylab="log2(count)")
+
+ScrePlot(pi_2,dp_2,N=NA)
+mtext(side=3,line=0,text="after removing first component")
+multidensity(datm[,c(1,10,15,20)],main="after filtering",las=1)
+boxplot(datm,outline=FALSE)
+#Effect on the genes distribution
+boxplot(t(datm[c(1,4,10,44,69,1000,2000,4000),]),outline=FALSE,las=2,ylab="log2(count)")
+
+```
+
+
+## Perform SVD on individual matrices (AltEx, IR, and GE)
+We start by performing SVD on individual matrices and compare how information is captured in the different matrices.
+
+```{r captured_info,warning=FALSE,fig.width=10, fig.height=5}
+layout(matrix(c(1:6),ncol=3,nrow=2,byrow=FALSE))
+
+#1. SVD on the Gene Expression
+dat1         <- ge
+SVD_eset     <- svd(dat1)
+ScrePlot(getFractionVariance(SVD_eset),getShannonEntropy(getFractionVariance(SVD_eset)))
+mtext(side=3,line=0,text="Gene Expression")
+datm         <- dat1-SVD_eset$d[1]*(SVD_eset$u[,1]%*%t(SVD_eset$v[,1]))
+SVD_eset_GE  <- svd(datm)
+ScrePlot(getFractionVariance(SVD_eset_GE),getShannonEntropy(getFractionVariance(SVD_eset_GE)))
+mtext(side=3,line=0,text="Gene Expression")
+#2. SVD on the AltEx
+dat1         <- EX_nuc
+SVD_eset     <- svd(dat1)
+ScrePlot(getFractionVariance(SVD_eset),getShannonEntropy(getFractionVariance(SVD_eset)))
+mtext(side=3,line=0,text="AltEx")
+mtext(side=3,line=1,text="Prior removing first component")
+datm         <- dat1-SVD_eset$d[1]*(SVD_eset$u[,1]%*%t(SVD_eset$v[,1]))
+SVD_eset_Ex  <- svd(datm)
+ScrePlot(getFractionVariance(SVD_eset_Ex),getShannonEntropy(getFractionVariance(SVD_eset_Ex)))
+mtext(side=3,line=1,text="After removing first component")
+mtext(side=3,line=0,text="AltEx")
+#3. SVD on the IR
+dat1         <- IR_nuc
+SVD_eset     <- svd(dat1)
+ScrePlot(getFractionVariance(SVD_eset),getShannonEntropy(getFractionVariance(SVD_eset)))
+mtext(side=3,line=0,text="IR")
+datm         <- dat1-SVD_eset$d[1]*(SVD_eset$u[,1]%*%t(SVD_eset$v[,1]))
+SVD_eset_IR  <- svd(datm)
+ScrePlot(getFractionVariance(SVD_eset_IR),getShannonEntropy(getFractionVariance(SVD_eset_IR)))
+mtext(side=3,line=0,text="IR")
+```
+
+
+Let's now compare their first PCs to test who the time is captured by the different matrices in the different SVD.
+```{r pca_plot,warning=FALSE,fig.width=6, fig.height=6}
+#PCA plots
+par(mfrow=c(3,3),mar=c(4,4,2,2))
+plot(SVD_eset_GE$v[,1], SVD_eset_GE$v[,2],col=mycols,xlab="PC1",ylab="PC2",main="Gene Expression",pch=19,cex=1.5,las=1)
+plot(SVD_eset_Ex$v[,1], SVD_eset_Ex$v[,2],col=mycols,xlab="PC1",ylab="PC2",main="AltEx",pch=19,cex=1.5,las=1)
+plot(SVD_eset_IR$v[,1], SVD_eset_IR$v[,2],col=mycols,xlab="PC1",ylab="PC2",main="IR",pch=19,cex=1.5,las=1)
+
+
+plot(SVD_eset_GE$v[,1], SVD_eset_GE$v[,3],col=mycols,xlab="PC1",ylab="PC3",main="Gene Expression",pch=19,cex=1.5,las=1)
+plot(SVD_eset_Ex$v[,1], SVD_eset_Ex$v[,3],col=mycols,xlab="PC1",ylab="PC3",main="AltEx",pch=19,cex=1.5,las=1)
+plot(SVD_eset_IR$v[,1], SVD_eset_IR$v[,3],col=mycols,xlab="PC1",ylab="PC3",main="IR",pch=19,cex=1.5,las=1)
+
+
+plot(SVD_eset_GE$v[,2], SVD_eset_GE$v[,3],col=mycols,xlab="PC2",ylab="PC3",main="Gene Expression",pch=19,cex=1.5,las=1)
+plot(SVD_eset_Ex$v[,2], SVD_eset_Ex$v[,3],col=mycols,xlab="PC2",ylab="PC3",main="AltEx",pch=19,cex=1.5,las=1)
+plot(SVD_eset_IR$v[,2], SVD_eset_IR$v[,3],col=mycols,xlab="PC2",ylab="PC3",main="IR",pch=19,cex=1.5,las=1)
+```
+
+Do you see any differences in the clustering of the samples using the different count matrices?
+
+## The dynamic of the components over time
+Let's now look into the dynamic over time of the different component:
+```{r component_over_time,warning=FALSE,fig.width=8, fig.height=6,eval=TRUE}
+
+myMean <- list( t(apply(SVD_eset_GE$v,2,function(x)return(tapply(x,INDEX=mygroup,FUN=mean)))),
+                t(apply(SVD_eset_Ex$v,2,function(x)return(tapply(x,INDEX=mygroup,FUN=mean)))),
+                t(apply(SVD_eset_IR$v,2,function(x)return(tapply(x,INDEX=mygroup,FUN=mean))))               )
+mySD  <- list(t(apply(SVD_eset_GE$v,2,function(x)return(tapply(x,INDEX=mygroup,FUN=sd)))),
+              t(apply(SVD_eset_Ex$v,2,function(x)return(tapply(x,INDEX=mygroup,FUN=sd)))),
+              t(apply(SVD_eset_IR$v,2,function(x)return(tapply(x,INDEX=mygroup,FUN=sd))))              )
+
+#Plot component over time
+days                <- c(0,3,7,14,21,35)
+cats                <- c("Gene Expression","AltEx","IR","3UTR")
+CEX<- 0.7
+par(mfrow=c(3,3),mar=c(5,5,2,0),oma=c(2,2,2,2))
+for(j in c(1:3)){
+  for(i in c(1:3)){
+    MIN=min(0,min(myMean[[j]][i,]-mySD[[j]][i,]))
+    MAX=max(myMean[[j]][i,]+mySD[[j]][i,])
+    plot(days,myMean[[j]][i,],pch=19,type="b",lty=2,ylim=c(MIN,MAX),las=1,frame="F",xlab="time [days]",cex=1.0,cex.axis=CEX,cex.lab=CEX,ylab="")
+    mtext(side=2,line=3,text=paste("PC",i,sep=""),cex=CEX)
+    mtext(side=3,line=0,text=cats[j],cex=CEX)
+    grid()
+    abline(h=0,col="red",lty=2)
+  }
+}
+
+```
+
+# Graded homework
+Your homework will be graded according to three criteria:
+1) Correctness of your result;
+2) Clarity of the visual output;
+3) Description of your results demonstrating your ability to discuss your result in their biological context.
+
+## Task 1. AS related (0.5 pt)
+- Extract the list of genes exhibiting IR in nucleus and cytoplasm and compare these two lists with appropriate plot. **ADDITIONAL INFO:**
+    + Extract genes exhibiting increase versus decrease in IR in **nucleus** from DIV=0 and DIV=35.
+    + Extract genes exhibiting increase versus decrease in IR in **cytoplasm** from DIV=0 and DIV=35.
+    + Compare these lists (venn or any other plot that you may find relevant).
+    + Appropriate threshold of changes in splicing is between 15% and 20%. 
+    + You are welcome to visually explore your results with IGV as shown during the lecture.
+    + `dat_diff_time_nuc_ctrl` and `dat_diff_time_cyto_ctrl` are data-frame containing the 'average' changes over time in splicing while `tab_psi` contains the PSI values for each individual samples.
+
+```{r}
+
+
+threshold_psi <- 0.2
+threshold_mv_dpsi <- 0.2
+
+# Filter significant IR events in the nucleus and cytoplasm. We think negative E.dPsi values might relate to a decrease in IR whereas positive E.dPsi might relate to an increase in IR (in DIV=35 compared to DIV=0). Since we want increase and not decrease, we only filter with the positive threshold.
+
+significant_ir_nuc <- dat_diff_time_nuc_ctrl[which((dat_diff_time_nuc_ctrl$E.dPsi.d_35_0 > threshold_psi)  & 
+                                            (!is.na(dat_diff_time_nuc_ctrl$E.dPsi.d_35_0)) & 
+                                            (dat_diff_time_nuc_ctrl$COMPLEX_short == "IR") &
+                                            (dat_diff_time_nuc_ctrl$MV.dPsi.d_35_0 > threshold_mv_dpsi )), 1]
+
+significant_ir_cyto <- dat_diff_time_cyto_ctrl[(which((dat_diff_time_cyto_ctrl$E.dPsi.d_35_0 > threshold_psi) &  
+                                              (!is.na(dat_diff_time_cyto_ctrl$E.dPsi.d_35_0)) & 
+                                              (dat_diff_time_cyto_ctrl$COMPLEX_short == "IR") &
+                                              (dat_diff_time_cyto_ctrl$MV.dPsi.d_35_0 > threshold_mv_dpsi ))), 1]
+
+#Check the number of significant genes obtained
+
+length_significant_ir_nuc <- length(significant_ir_nuc)
+length_significant_ir_cyto <- length(significant_ir_cyto)
+
+length_significant_ir_nuc
+length_significant_ir_cyto
+
+# Venn diagram to compare the lists
+
+#Put the two gene lists into a list with all genes. SINCE WE ARE ASKED FOR GENES AND NOT EVENTS, WE USE UNIQUE TO GET EACH GENE ONLY ONCE.
+
+complete_genes_lists <- unique(c(significant_ir_cyto, significant_ir_nuc))
+
+#Create a matrix to store the comparisons
+genes_comparisons <- matrix(0, nrow = length(complete_genes_lists), ncol = 2)
+rownames(genes_comparisons) <- complete_genes_lists
+colnames(genes_comparisons) <- c("Cytoplasmic", "Nuclear")
+genes_comparisons[rownames(genes_comparisons) %in% significant_ir_cyto, "Cytoplasmic"] <- 1
+genes_comparisons[rownames(genes_comparisons) %in% significant_ir_nuc, "Nuclear"] <- 1
+
+
+# Plot the Venn diagram
+vennDiagram(genes_comparisons, main = "Number of genes undergoing IR in the nucleus, cytoplasm and both")
+
+```
+
+
+
+We observe many more intron retention (IR) instances in the nucleus compared to the cytoplasm, and not many instances present in both. Since IR is a form of alternative splicing, its prevalence in the nucleus indicates that aberrant splicing events may occur early in the transcriptional process, possibly during pre-mRNA processing or nuclear export. Since we don't want the aberrant isoforms to be expressed, few proteins issued from aberrant IR instances leave the nucleus and reach the cytoplasm.
+
+    
+- Plot PSI values over time in nuc and cyto of the 4 top genes exhibiting IR only in nucleus and top genes only in cytoplasm. **ADDITIONAL INFO:**
+    + Use data from `tab_psi` where there are the PSI values for individual samples.
+    + You are welcome to use function proposed in this tutorial or create your own.
+    
+```{r}
+
+# Do the same filtering to have data frames and not atomic vectors. We don't do unique here because we care about individual events.
+
+significant_ir_nuc_f <- dat_diff_time_nuc_ctrl[which((dat_diff_time_nuc_ctrl$E.dPsi.d_35_0 > threshold_psi)  & 
+                                            (!is.na(dat_diff_time_nuc_ctrl$E.dPsi.d_35_0)) & 
+                                            (dat_diff_time_nuc_ctrl$COMPLEX_short == "IR") &
+                                            (dat_diff_time_nuc_ctrl$MV.dPsi.d_35_0 > threshold_mv_dpsi )), ]
+
+significant_ir_cyto_f <- dat_diff_time_cyto_ctrl[(which((dat_diff_time_cyto_ctrl$E.dPsi.d_35_0 > threshold_psi) &  
+                                              (!is.na(dat_diff_time_cyto_ctrl$E.dPsi.d_35_0)) & 
+                                              (dat_diff_time_cyto_ctrl$COMPLEX_short == "IR") &
+                                              (dat_diff_time_cyto_ctrl$MV.dPsi.d_35_0 > threshold_mv_dpsi ))), ]
+
+
+# Order significant_ir_nuc in decreasing order of E.dpsi.d_35_0 and select the first 4 genes that are ONLY in the nucleus. Since we are not asked to present the top 4 genes and we need the corresponding events for plotting, we directly extract the event IDs.
+# Order significant_ir_cyto in decreasing order of E.dpsi.d_35_0 and select the first 4 event IDs.
+
+events_nuc <- significant_ir_nuc_f[order(-significant_ir_nuc_f$E.dPsi.d_35_0), "EVENT"]
+events_cyto <- significant_ir_cyto_f[order(-significant_ir_cyto_f$E.dPsi.d_35_0), "EVENT"]
+
+top_events_nuc <- events_nuc[!events_nuc %in% events_cyto][1:4]
+top_events_cyto <- events_cyto[!events_cyto %in% events_nuc][1:4]
+
+# Filter significant_ir_nuc_f for genes corresponding to top_events_nuc
+genes_top_nuc <- significant_ir_nuc_f[significant_ir_nuc_f$EVENT %in% top_events_nuc, "GENE"]
+
+# Filter significant_ir_cyto_f for genes corresponding to top_events_cyto
+genes_top_cyto <- significant_ir_cyto_f[significant_ir_cyto_f$EVENT %in% top_events_cyto, "GENE"]
+
+# Print the genes for top events in the nucleus and cytoplasm
+print("Genes corresponding to top events in the nucleus:")
+print(genes_top_nuc)
+
+print("Genes corresponding to top events in the cytoplasm:")
+print(genes_top_cyto)
+
+top_events_nuc
+top_events_cyto
+
+# Plot PSI events over time of the 4 top unique IR genes in the nucleus
+par(mfrow=c(2,2))
+for (event in top_events_nuc) {
+  plotEventOverTime(event)
+}
+
+# Plot PSI events over time of the 4 top unique IR genes in the cytoplasm
+par(mfrow=c(2,2))
+for (event in top_events_cyto) {
+  plotEventOverTime(event)
+}
+
+```
+
+We will treat each event as independent and take the general message. Negative E.dPsi values might relate to a decrease in IR whereas positive E.dPsi might relate to an increase in IR (in DIV=35 compared to DIV=0). The four top events can be considered as the four top genes. 
+
+For the plots corresponding to the IR events in the nucleus, we obtain predictable figures for the top 4 events: as time passes by, IR events increase (PSI values corresponding to the event increase, they reach 100%) only in the nucleus and not in the cytoplasm. This does not shock us because most of the genes exhibiting IR don't leave the nucleus, and there are more and more alternative splicing events due to differentiation.
+
+As for the plots corresponding to the IR events in the cytoplasm, it is understandable that few events will occur only in the cytoplasm and not also in the nucleus, therefore we obtain high PSI values for IR instances in both. All in all, we can't infer much more information from these plots, as we don't know why IR occurs more as the cells are more differentiated. 
+
+
+- What biological pathways are impacted by nuclear detention of IRT (Intron Retaining Transcripts)? Are these similar to those exported to the cytoplasm?
+
+```{r}
+
+significant_ir_nuc_only <- setdiff(significant_ir_nuc, significant_ir_cyto)
+
+#Gene ontology analysis of IR genes in the nucleus
+GO_analysis(significant_ir_nuc_only)
+
+significant_ir_cyto_only <- setdiff(significant_ir_cyto, significant_ir_nuc)
+
+#Gene ontology analysis of IR genes in the cytoplasm
+GO_analysis(significant_ir_cyto_only)
+
+```
+
+Refers to the transcripts (mRNAs) with intron retention that are detained/retained in the nucleus (they don't go to the cytoplasm). The pathways associated with the transcripts that are retained in the nucleus are very different from those that reach the cytoplasm. As mentioned, since very few transcripts with IR go to the cytoplasm and are not present in the nucleus, there are almost no pathways involved with those. As for the transcripts that stay only in the nucleus, we have several pathways, the most significant being that of protein binding.
+
+
+
+## Taks 2. Hierarchical clustering analysis (0.25 pt)
+Use hierarchical clustering analysis to test whether the time component is differentially captured by changes in gene expression, AltEx, and intron retention the nuclear fractions. **ADDITIONAL INFO:**
+
+- You need to do the HC analysis separately on three matrices (`ge`, `EX_nuc`, `IR_nuc`).
+- You may need to select the appropriate columns/samples using the `info` data-frame. This comment is just here to tell you that if you want to compare the 3 clusterings, it is better that you consider the same samples only. You may have noticed that in tab_psi you have more samples than we have in the gene expression matrix "ge". Therefore to obtain the matrices EX_nuc and IR_nuc that are derived from tab_psi; we should filter the samples to keep the same than in "ge". But this has been done for you in the part "## Prepare relevant matrices".
+- You may want to use the following command  `par(mfrow=c(1,3),mar=c(1,0,3,1))` to put the three plots on the same line.
+
+```{r}
+
+# Hierarchical clustering of the samples is frequently used to analyse whether similar samples cluster together.
+
+# Prepare relevant matrices
+#ge                <- myE_gen
+#EX_nuc            <- as.matrix(tab_psi[which(tab_psi$COMPLEX_short=="EX"),match(colnames(myE_gen),colnames(tab_psi))])
+#IR_nuc            <- as.matrix(tab_psi[which(tab_psi$COMPLEX_short=="IR"),match(colnames(myE_gen),colnames(tab_psi))])
+
+library(ape)
+
+CEX = 1.0
+# Perform hierarchical clustering on gene expression matrix (ge)
+hcl_ge <- hclust(dist(t(ge), method = "manhattan"), method = "ward.D")
+
+# Perform hierarchical clustering on EX_nuc matrix
+hcl_ex_nuc <- hclust(dist(t(EX_nuc), method = "manhattan"), method = "ward.D")
+
+# Perform hierarchical clustering on IR_nuc matrix
+hcl_ir_nuc <- hclust(dist(t(IR_nuc), method = "manhattan"), method = "ward.D")
+
+# Plot the three dendrograms in a row. Tree-like diagram that represents the arrangement of objects or variables based on their similarity or dissimilarity.
+
+par(mfrow = c(1, 3), mar = c(1, 0, 3, 1))
+
+plot(as.phylo(hcl_ge), tip.color = mycols, cex = 1.0, label.offset = 0.001, no.margin = TRUE, use.edge.length = TRUE, direction = "rightwards", plot = TRUE, font = 1, main = "Gene Expression")
+
+plot(as.phylo(hcl_ex_nuc), tip.color = mycols, cex = 1.0, label.offset = 0.001, no.margin = TRUE, use.edge.length = TRUE, direction = "rightwards", plot = TRUE, font = 1, main = "AltEx Nuclear")
+
+plot(as.phylo(hcl_ir_nuc), tip.color = mycols, cex = 1.0, label.offset = 0.001, no.margin = TRUE, use.edge.length = TRUE, direction = "rightwards", plot = TRUE, font = 1, main = "Intron Retention Nuclear")
+
+```
+The trees we obtain indicate that the corresponding features (gene expression, AltEx, or IR) capture temporal changes in gene regulation across the studied time points. This reflects the intricate regulatory mechanisms underlying cellular differentiation and maturation.
+
+
+
+## Task 3. SVD analysis (0.25 pt)
+- Extract the top 500 most positively and 500 most negatively contributing genes to the first 5 components of SVD from IR.**ADDITIONAL INFO:**
+    + Use left singular matrix of the SVD for this task.
+    + There is a function in R enabling you to sort vectors (included in this tuto).
+
+    
+```{r}
+# Extract the left singular matrix from SVD results
+U <- SVD_eset_IR$u
+
+# Get the top n indices for positive and negative values in each column of U
+
+pos_indices <- lapply(1:5, function(i) order(U[, i], decreasing = TRUE)[1:500])
+neg_indices <- lapply(1:5, function(i) order(U[, i], decreasing = FALSE)[1:500])
+
+# Extract the genes corresponding to the top indices
+pos_genes <- lapply(pos_indices, function(indices) rownames(IR_nuc)[indices])
+neg_genes <- lapply(neg_indices, function(indices) rownames(IR_nuc)[indices])
+```
+    
+- Use boxplot to display their behaviours over time.**ADDITIONAL INFO:**
+    + Once you have extracted the top 500 genes, you need to plot their PSI values over time i.e. behaviours.
+
+```{r}
+
+# Define the color vector for all timepoints, repeating every 5 samples
+mycols_days <- rep(c("#CCFF00", "#33CC33", "#669999", "#6699FF", "#3300FF", "#CC33CC"), each =4 )
+
+# PC 1 and PC 2
+par(mfrow= c(2,2))
+
+for (i in 1:2) {
+    # For top positive genes
+    pos_genes_data <- IR_nuc[pos_genes[[i]], ]
+    boxplot(pos_genes_data, main = paste("Behavior of Positive Genes (PC", i, ") Over Time", sep = ""),
+            xlab = "Time", ylab = "PSI", col = mycols_days, border = "black", notch = TRUE)
+
+    # For top negative genes
+    neg_genes_data <- IR_nuc[neg_genes[[i]], ]
+    boxplot(neg_genes_data, main = paste("Behavior of Negative Genes (PC", i, ") Over Time", sep = ""),
+            xlab = "Time", ylab = "PSI", col = mycols_days, border = "black", notch = TRUE)
+}
+
+# PC 3 and PC 4
+par(mfrow= c(2,2))
+
+for (i in 3:4) {
+    # For top positive genes
+    pos_genes_data <- IR_nuc[pos_genes[[i]], ]
+    boxplot(pos_genes_data, main = paste("Behavior of Positive Genes (PC", i, ") Over Time", sep = ""),
+            xlab = "Time", ylab = "PSI", col = mycols_days, border = "black", notch = TRUE)
+
+    # For top negative genes
+    neg_genes_data <- IR_nuc[neg_genes[[i]], ]
+    boxplot(neg_genes_data, main = paste("Behavior of Negative Genes (PC", i, ") Over Time", sep = ""),
+            xlab = "Time", ylab = "PSI", col = mycols_days, border = "black", notch = TRUE)
+}
+
+# PC 5
+par(mfrow= c(2,1))
+
+i <- 5
+# For top positive genes
+pos_genes_data <- IR_nuc[pos_genes[[i]], ]
+boxplot(pos_genes_data, main = paste("Behavior of Positive Genes (PC", i, ") Over Time", sep = ""),
+        xlab = "Time", ylab = "PSI", col = mycols_days, border = "black", notch = TRUE)
+
+# For top negative genes
+neg_genes_data <- IR_nuc[neg_genes[[i]], ]
+boxplot(neg_genes_data, main = paste("Behavior of Negative Genes (PC", i, ") Over Time", sep = ""),
+        xlab = "Time", ylab = "PSI", col = mycols_days, border = "black", notch = TRUE)
+
+```
+
+
+
+*Hint: U left-singular matrix provides with loadings of the genes/transcripts in individual components.*
+
+
+
+From the plots corresponding to PC1 we can see that the first component discriminates very well the last timepoint, it provides the best visualization for the differences between the last timepoint with respect to the rest of the timepoints. We see a drop in IR in days 22 and 35 for the 500 most positively contributing genes, while we see an increase in the most negatively contributing genes (these differences are due to maturation, but the biological reason remains unknown). PC2 presents almost the same variation. As for PC3, we can say that it's the best component to see the change in PSI values from the first timepoint to the others, especially for the 500 most positively contributing genes. PC4 and PC5 show all timepoints uniformly, they are not relevant PCs. 
+
+## Task 4 (Bonus). Enrichment of relevant PCi (0.25 pt)
+Perform BP enrichment analysis on relevant PCs as identified in previous point.
+```{r}
+#The most relevant PCs are PC 1, 2 and 3
+
+# For PC 1
+PC1_genes <- IR_nuc[pos_genes[[1]], ]
+GO_analysis(PC1_genes)
+
+PC1_genes_neg <- IR_nuc[neg_genes[[1]], ]
+GO_analysis(PC1_genes_neg)
+
+# For PC 2
+PC2_genes <- IR_nuc[pos_genes[[2]], ]
+GO_analysis(PC2_genes)
+
+PC2_genes_neg <- IR_nuc[neg_genes[[2]], ]
+GO_analysis(PC2_genes_neg)
+
+# For PC 3
+PC3_genes <- IR_nuc[pos_genes[[3]], ]
+GO_analysis(PC3_genes)
+
+PC3_genes_neg <- IR_nuc[neg_genes[[3]], ]
+GO_analysis(PC3_genes_neg)
+
+```
+

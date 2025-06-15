@@ -1,0 +1,301 @@
+---
+title: "6. Graded problem class - population genetics and sequence evolution"
+author: "EPFL - SV - BIO-463"
+date: 03/26/2024
+date-format: long
+format:
+  html:
+    embed-resources: true
+  pdf:
+    papersize: a4
+    fig-width: 6
+    fig-height: 4
+format-links: false
+---
+
+This problem set will be graded and count for **25% of your final grade**. You can discuss with TAs and with fellow students about the problem set, but in the end you should hand in a **personal** solution. Detected plagiarism will result in a reduction of your grade. 
+
+The recommended language is R, as in all the class BIO-463. Below, some R functions are recommended. However, we will also accept solutions in Python. 
+
+Please hand in your solution in a single file, with the following format: **.Rmd**, **.qmd** (or **.ipynb** if you choose to use Python). Please do not hand in a pdf or an html file instead.
+
+The two exercises are fully independent from each other. Each of them will be allocated the same number of points. 
+
+Please hand in your solution on **Moodle** by **Friday, March 29 at 11:59pm**. 
+
+
+## Exercise 1 - Simulating experimental evolution with serial passage
+
+In this exercise, we will simulate the evolution of a haploid and asexual population in an evolution experiment with serial passages.
+Let us consider a model with serial dilutions such that the population of initial size $K$ (bottleneck) undergoes deterministic exponential growth for a time $t$ and then $K$ individuals are selected randomly from the grown population to form the next bottleneck, and so on. We assume that there are two types of individuals, wild-types with fitness 1 and mutants with fitness $1+s$. These fitnesses represent deterministic growth rates. 
+
+1. Let us consider a given growth rate. Write the mutant fraction $x'$ after growth as a function of the mutant fraction $x$ before growth and of the parameters of the system. Assuming that $s=0.01$, $t=10$, $K=1000$ and $x=0.1$, compute the value of $x'$. Same question if all values are the same except that $s=0.2$. Compare the results obtained in these two cases.
+
+```{r}
+#Following the deterministic description for large populations, we can compute the value of the mutant fraction after growth the following way. We expect the mutant fraction after exponential growth to be higher for the case where s (the selective advantage) is higher, because more mutants will have survived and grown, as the fitness is higher.
+
+mf_after = function(s, t, x){
+  return(x*exp(s*t)/(1+x*(exp(s*t)-1)))
+}
+
+#Case s = 0.01
+#We define the parameters
+s=0.01
+t=10
+K=1000
+x=0.1 #Mutant fraction before growth
+
+x1_prima = mf_after(s, t, x)
+cat("Case for s = 0.01, x' =", x1_prima, "\n")
+
+#Case s = 0.2
+s=0.2
+x2_prima = mf_after(s, t, x)
+cat("Case for s= 0.2, x' =", x2_prima, "\n")
+
+```
+
+
+2. Let us consider a given dilution step, and let us call $k$ the number of mutants that are sampled to form the next bottleneck. What are the minimal and maximal values $k$ can take? What is the name of the probability distribution that $k$ follows? Write the formula for the probability $P(k)$ to obtain a given value of $k$.
+
+```{r}
+#The minimal value k can take is 0, since we can sample 0 mutants from the previously grown population.
+
+#The maximal value k can take is K, where the whole of the population that we take from the original bottleneck turns out to be mutants.
+
+#The probability distribution that k follows is the binomial one.
+
+#Formula for the probability distribution:
+```
+
+$$P(k_{n+1}) = \binom{K}{k_{n+1}} (x')^k (1-(x'))^{K-k_{n+1}}$$
+
+3. What is different or similar between the model with serial passage we are focusing on now and the Wright-Fisher model?
+
+```{r}
+
+#Evolution experiments are often conducted in batch culture with serial transfers, also called serial passage. The population of initial size K (bottleneck) undergoes deterministic exponential growth for a time t and then K individuals are selected randomly from the grown population to form the next bottleneck, and so on. This bottleneck effect can lead to changes in genetic diversity over time (rare alleles may be lost, and the frequencies of other alleles may change due to genetic drift). We assume that there are two types of individuals, wild-types with fitness 1 and mutants with fitness 1 + s. These fitnesses represent deterministic growth rates. We consider that the sampling upon the dilution step follows a binomial law, as in the Wright-Fisher model.
+
+#On the other hand, the Wright-Fisher model is a population model at constant size N (a similarity between the two is that both models use a fixed population size) where non-overlapping generations are considered. We consider that there are two types of haploid individuals, wild-types with fitness 1 and mutants with fitness 1+s (where we make no assumption on the sign of s), and we denote by xn the fraction of mutants at generation n in the population. (Note that traditionally one considers diploid individuals with sexual reproduction, but here we consider haploid ones with asexual reproduction). In the Wright-Fisher model, N individuals are randomly sampled from the entire population with replacement using a binomial law with proportion x0n in order to form generation n + 1, where x0n accounts both for the fraction xn and for the fitness of each type.
+ 
+```
+
+
+4. What function can you use to sample the number $k$ of mutants that exist at the next bottleneck? Using this function, perform sampling assuming that $s=0.01$, $t=10$, $K=1000$ and $x=0.1$. Sample $n=1000$ different values of $k$, compute their mean and standard deviation, and plot the histogram of the values obtained.
+
+```{r}
+#The function we will use for a random binomial sampling is the rbinom function.
+
+#We first define the parameters
+s=0.01
+t=10
+K=1000
+x=0.1
+n=1000 #1000 different "bags"
+
+
+sampled_values = rbinom(n, size = K, prob = mf_after(s, t, x)) 
+
+#We compute their mean and standard deviation
+mean_val = mean(sampled_values)
+std_dev = sd(sampled_values)
+
+
+#For better visualization
+hist(sampled_values, breaks = 20, main = "Histogram of Number of Mutants",
+     xlab = "Number of Mutants", ylab = "Frequency")
+abline(v = mean_val, col = "red", lwd = 2, lty = 2)
+abline(v = (mean_val + std_dev), col = "black", lwd = 2, lty = 2)
+abline(v = (mean_val - std_dev), col = "black", lwd = 2, lty = 2)
+legend("topright", legend = c(paste("Mean =", round(mean_val, 2)),  paste("Standard Deviation =", round(std_dev, 2))),
+       col = c("red", "black", "black"), lwd = c(2, 1), lty = c(2, 1), cex = 0.8)
+```
+
+
+5. Simulate the serial passage model described above with $s=0.01$, $t=10$, $K=1000$, starting with 1 mutant at the initial bottleneck (bottleneck number 1) for 150 bottlenecks. Plot the fraction of mutants in the population versus the number of generations in 100 different realizations on the same plot. Comment: what are the long-term outcomes of these trajectories?
+
+```{r}
+#The long-term outcomes of these trajectories can be total takeover (mutant fraction 1) or total extinction (0). In this case, the general outcome is that the mutation fixes, as all the curves reach 1 at around 100 bottlenecks.
+
+#We first define the parameters
+s=0.01
+t=10
+K=1000
+n_bottleneck = 150
+mutants_ini = 1
+n_rep = 100
+
+mutant_frac = matrix(nrow=n_bottleneck, ncol=n_rep)
+
+for(j in 1:n_rep){
+  mutants = mutants_ini
+  for(i in 1:n_bottleneck){
+    x = mutants / K
+    mutants = rbinom(1, K, mf_after(s,t,x))
+    mutant_frac[i,j] = x
+  }
+}
+matplot(1:n_bottleneck, mutant_frac, pch=20, type="l", lty="solid", main='Neutral Wright-Fisher model', xlab='Generation', ylab='Mutant fraction')
+```
+
+
+##  Exercise 2 - Mutations in the flu virus
+
+The file HA_sequences.fasta contains a list of nucleotide sequences of the gene coding for hemagluttinin (HA), from influenza viruses sampled between 1968 and 2005. In the fasta format, each sequence comes with a *header* that contains annotations: here, the header contains the year of sampling.
+
+1. Load the sequences and inspect the data. In R, you may use the *seqinr::read.fasta* function for this, part of the *seqinr* package. How many sequences are there? What is the length of each sequence? 
+
+```{r}
+library("seqinr")
+
+read = read.fasta("C:/Users/norar/OneDrive/Documentos/EPFL/Genomics and bioinformatics/ExercisesWeek6_data_and_source/ExercisesWeek6_data_and_source/HA_sequences.fasta", whole.header = TRUE)
+
+#How many sequences are there? There are 841 sequences
+num_seq = length(read)
+print(num_seq)
+
+#What is the length of each distance? How many nucleotides does each sequence contain? 1694 nucleotides.
+nucleotides = getLength(read)
+print(unique(nucleotides))
+```
+
+
+
+2. Calculate the Hamming distance between the first sequence (A/Aichi/2/1968) and each of the other sequences. In R, you may use the *DescTools::StrDist* function for this, part of the *DescTools* package. Remark 1: this package requires R version >= 4.2.0. Remark 2: remember that the Hamming distance should be between 0 and 1. Also calculate the Jukes-Cantor distance between the first sequence (A/Aichi/2/1968) and each of the other sequences. Plot both of them versus the sampling year. Comment: what is the trend of these distances? What fraction of the HA gene has changed due to mutations during this 37 year period? How many mutations per site on average does this correspond to? 
+
+
+```{r}
+library("DescTools")
+
+#What is the trend of these distances? Both distances increase almost linearly as years pass by, as more mutations appear. 
+
+#What fraction of the HA gene has changed due to mutations during this 37 year period? This fraction is given by the highest value of the Hamming distances (0.1310508 or 13.1% of the gene has changed), since this formula tells us directly how different your sequences (first and last) are (without taking into account how many mutations happened). Also, we discussed that the trends keep increasing, therefore we can say that the Hamming distance value corresponding to year 2005 is the highest one.
+
+#How many mutations per site on average does this correspond to? Following the same reasoning, this average corresponds to the highest Jukes-Cantor distance, since it takes into account the mutations. The value will be 0.1440375 mutations per base.
+
+first_seq = read[["A/Aichi/2/1968"]]
+
+hamming = c()
+jukes = c()
+sampling_year = c()
+
+counter = 1
+
+#Function for Jukes-Cantor distances
+jukes_cantor_d = function(hamming_d, length) {
+  return(-3/4 * log(1 - 4/3 * hamming_d / length))
+}
+
+
+for(other_seq in read[1:num_seq]) {
+  
+  counter
+  hamming[counter] = StrDist(first_seq, other_seq, method = "hamming")
+  jukes[counter] = jukes_cantor_d(hamming[counter], length(other_seq))
+  sampling_year[counter] = as.integer(gsub('.*/(\\d+)$', '\\1', attr(other_seq, "Annot")))
+  counter = counter + 1
+  }
+
+
+hamming = hamming / 1694
+
+print(max(hamming))
+print(max(jukes))
+
+#Hamming in blue
+plot(hamming ~ sampling_year, type = "p", col = rgb(0, 0, 1, alpha = 0.5), pch = 19, xlab = "Category", ylab = "Value", main = "Plot of Category vs Value")
+
+#To plot on top, Jukes-Cantor in red
+
+points(jukes ~ sampling_year, col = rgb(1, 0, 0, alpha = 0.5), pch = 19)
+
+```
+
+
+
+3. If you wanted to construct a phylogenetic tree from the sequences considered here, do you think that the UPGMA method would give a reasonable result? Justify your answer. You do not need to construct a tree.
+
+```{r}
+#Unweighted Paired Group Mean Arithmetic (UPGMA) is a rough estimate that works well if all the leaves of the tree are at the same distance from the root, meaning that all branches evolve at the same rate. In the following exercises we assume that this mutation rate is constant, and the Hamming and Jukes-Cantor distances increase linearly over time; however, viruses are very mutagenic and it isn't reasonable to think that all leaves will exist in the year 2005. In conclusion, this method would give understandable results but not very reasonable ones. 
+```
+
+
+4. Calculate the Hamming distances between each pair of strains from the same year. Do this for all years, obtaining a list of Hamming distances between strains from the same year. (This calculation takes some time.) Plot the distribution of all these distances in a single histogram (including the data corresponding to all years). Calculate the mean and the maximum value of these distances. Comment: compare to the results from question 2.
+
+```{r}
+#The mean value of the Hamming distance we obtain is much smaller. This makes sense, as it is understandable that even if the first and last versions of the virus are very different (much higher Hamming distance value obtained in question 2.2), inter-yearly the virus mutated only a bit, thus the Hamming distance is not as big within the years between 1968 and 2005.
+
+#Note: I will take into account the first sequence even if it is not a strain, to compare it with the first strain corresponding to the second sequence.
+
+unique_sampling_year = unique(sampling_year)
+same_year_hamming_distances = c()
+same_year_hamming_distances_years = c()
+
+
+counter = 0
+
+for(y in unique_sampling_year) {
+  
+  curr_year_seq = read[sampling_year == y]
+  
+  for(i in 1:length(curr_year_seq)){
+      for(j in 1:length(curr_year_seq)){
+        if(i == j){
+          next
+        }
+        same_year_hamming_distances[counter] = StrDist(curr_year_seq[[i]], curr_year_seq[[j]], method = "hamming")
+        same_year_hamming_distances_years[counter] = y
+        counter = counter + 1
+      }
+  }
+}
+
+
+
+same_year_hamming_distances = same_year_hamming_distances / nucleotides
+
+#Plot histogram
+hist(same_year_hamming_distances, main = "Distribution of Hamming Distances between Strains from the Same Year",
+     xlab = "Hamming Distance", ylab = "Frequency")
+
+#Calculate mean and max values
+mean_dist = mean(same_year_hamming_distances)
+max_dist = max(same_year_hamming_distances)
+
+
+cat("Mean Hamming Distance:", mean_dist, "\n")
+cat("Maximum Hamming Distance:", max_dist, "\n")
+```
+
+
+
+5. Focusing on Hamming distances for simplicity, estimate how long it would take for sequences to accumulate a number of differences corresponding to the average distance between sequences from the same year.
+
+```{r}
+sort_years=sort(unique(same_year_hamming_distances_years))
+n_years=length(sort_years)
+
+#We create a list for storing average distances grouped by year
+means=c()
+
+for(i in 1:n_years){
+  
+  is_same=which(same_year_hamming_distances_years==sort_years[i])
+  dist=same_year_hamming_distances[is_same]
+  means[i]=mean(dist)
+}
+
+
+#We need a "speed" (the mutation rate) for knowing how many years it would take to achieve that mutation
+time=max(sampling_year)-min(sampling_year)
+mutation_rate=max(hamming)/time
+
+result=max(means)/mutation_rate
+result_avg = mean_dist/mutation_rate
+
+
+cat("The longest it can take to achieve the mutation is",result,"years.\n")
+cat("The years it takes to accumulate a number of differences corresponding to the average distance between sequences from the same year is",result_avg,"years.\n")
+```
+
+

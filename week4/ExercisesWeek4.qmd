@@ -1,0 +1,111 @@
+---
+title: "4. Phylogenetic trees"
+author: "EPFL - SV - BIO-463"
+date: 03/12/2024
+date-format: long
+format:
+  html:
+    code-fold: false
+    embed-resources: true
+  pdf:
+    papersize: a4
+    fig-width: 6
+    fig-height: 4
+format-links: false
+---
+
+```{r}
+BiocManager::install(c("mafft"))
+```
+
+
+## Exercise 1: Align multiple homolog sequences together
+
+1. Use [MAFFT](https://mafft.cbrc.jp/alignment/software/) to create a multiple sequence alignment of the file *HomologGenes.fa*
+
+`
+bash$ mafft HomologGenes.fa > HomologGenes_mafft.mfa
+`
+
+2. You can use [Jalview](https://www.jalview.org/) to visualize your MSA
+3. Use [RAxML](https://github.com/stamatak/standard-RAxML) to generate a maximum likelihood tree with bootstrap values:
+
+`
+bash$ raxmlHPC -f a -x 123456 -p 6543221 -m GTRCAT -# 100 -n Homologs -s HomologGenes_mafft.mfa
+`
+
+4. You can use [FigTree](http://tree.bio.ed.ac.uk/software/figtree/) to visualize your tree
+
+```{r}
+#1.- Hay que hacerlo en bash , en terminal y en la carpeta donde hayamos instalado, instalarlo y todo, por eso nos dan ya el fichier.
+#2.- I see it, the regular MSA well seen.
+#3.- Same, we have to install it, the ouput file is the RAxML_bipartitions (character-based method for inferring a phylogenetic tree from sequence data).
+#4.- Also installing it, and we will do it in exercise 2.
+```
+
+
+## Exercise 2: Plot and analyze the gene tree
+
+Use the R packages *ape* to plot and annotate your tree.
+
+1. Load the file *RAxML_bipartitions.Homologs* using *[read.tree](https://www.rdocumentation.org/packages/ape/versions/5.6-2/topics/read.tree)*
+2. Plot the tree using *[plot.phylo](https://www.rdocumentation.org/packages/ape/versions/5.6-2/topics/plot.phylo)*
+3. Re-root the tree at the base of all bird genes (find all tree tips corresponding to *penguin* using *[grep](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/grep)*, then *[getMRCA](https://www.rdocumentation.org/packages/ape/versions/5.6-2/topics/mrca)* and *[root](https://www.rdocumentation.org/packages/ape/versions/5.6-2/topics/root)*
+4. Display the bootstrap values > 80 with *[nodelabels](https://www.rdocumentation.org/packages/ape/versions/5.6-2/topics/nodelabels)*
+5. Annotate the tree by displaying the *Barn_owl*, *human* and *Atlantic_salmon* genes in 3 different colors
+6. Based on this tree, how many paralogs of this gene exist in mammals, in birds and in fishes?
+7. Which *rat* gene is the ortholog of *human_5187*?
+
+```{r}
+library("ape")
+#1.- The output is: Phylogenetic tree with 31 tips and 29 internal nodes.
+tree = read.tree(file = "RAxML_bipartitions.Homologs")
+#2.-
+plot.phylo(tree)
+#3.-Instead what we want is to visualize the changes from penguins to humans, we want to reorganize. Grep (Pattern Matching and Replacement), MRCA (Find Most Recent Common Ancestors Between Pairs), root (Roots Phylogenetic Trees). Grep output is the number in the list of tip labels that matches with penguin; mrca gets a number of common ancestors for the tips; and root reroots.
+out =grep("penguin", tree$tip.label)
+ancestor = getMRCA(tree, out)
+new_tree = root(tree, node = ancestor, resolve.root=T)
+#4.-Labelling the Nodes, Tips, and Edges of a Tree. Bootstrap values in a phylogenetic tree indicate that out of 100, how many times the same branch is observed when repeating the generation of a phylogenetic tree on a resampled set of data.
+ns = which(as.numeric(tree$node.label) > 80)
+nb.tip = length(tree$tip.label)
+#5.-
+nb.tip = length(tree$tip.label)
+ihs = grep("human", tree$tip.label)
+ipt = grep("salmo", tree$tip.label)
+icn = grep("Barn_owl", tree$tip.label)
+irest = (1:length(tree$tip.label))[-c(ihs,ipt,icn)]
+
+par(oma=c(0,0,0,8), xpd=NA)
+plot.phylo(tree, show.tip.label=F, use.edge.length=F)
+nodelabels(tree$node.label[ns], node=ns+nb.tip, cex=0.6)
+tiplabels(tree$tip.label[ihs], ihs, adj=c(0,.5))
+tiplabels(tree$tip.label[ipt], ipt, bg='pink', adj=c(0,.5))
+tiplabels(tree$tip.label[icn], icn, bg='cyan', adj=c(0,.5))
+tiplabels(tree$tip.label[irest], irest, bg=0, frame='none', adj=c(0,.5))
+#6.- Paralogous if they diverged at a duplication event. There are 3 paralogs of this gene in mammals, 2 in birds and 4 in fishes. By counting the colors?
+#7.- Orthologous if they diverged at a speciation event. Black_rat_116909221 is the ortholog of human_5187.
+```
+
+
+## Exercise 3: Manipulate the gene tree
+
+Use the methods *[drop.tip, keep.tip and extract.clade](https://www.rdocumentation.org/packages/ape/versions/5.6-2/topics/drop.tip)* to plot the following subtrees:
+
+1. All non-fish species (remove all *salmon*, *zebrafish* and *torafugu*)
+2. The clade containing *human_8863* and *house_mouse_18628* (a clade contains all descendents of the last common ancestor of these 2 leaves)
+3. Only the birds (*penguins* and *owls*)
+
+```{r}
+#1.-
+par(oma=c(0,0,0,5), xpd=NA)
+subtree.1 = drop.tip(tree, grep("fugu|salmo|zebra", tree$tip.label))
+plot.phylo(subtree.1)
+#2.-
+subtree.2 = extract.clade(tree, node=getMRCA(tree, grep("_8863|_18628", tree$tip.label)))
+plot.phylo(subtree.2)
+#3.-
+subtree.3 = keep.tip(tree, grep("penguin|owl", tree$tip.label))
+plot.phylo(subtree.3 )
+```
+

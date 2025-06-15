@@ -1,0 +1,215 @@
+---
+title: "1. Introduction to R"
+author: "EPFL - SV - BIO-463"
+date: 02/20/2024
+date-format: long
+format:
+  html:
+    embed-resources: true
+  pdf:
+    papersize: a4
+    fig-width: 6
+    fig-height: 4
+format-links: false
+---
+
+
+## The R Programming Language
+
+[R is a programming language](https://www.r-project.org/) used for statistical analysis and data manipulation, widely used by several scientific communities which have contributed a large number of libraries.
+R is free (GNU license) and can be used to produce publication-ready graphics.
+
+R binaries and additional packages can be downloaded from several sites:
+
+* [Installation instructions](https://stat.ethz.ch/CRAN/) on the CRAN site.
+* [List of CRAN packages](https://stat.ethz.ch/CRAN/web/packages/available_packages_by_name.html)
+* [The Bioconductor project](http://www.bioconductor.org/) (bioinformatics software)
+* [The rdocumentation site](https://www.rdocumentation.org/)
+
+It can be used on the command-line in the terminal:
+
+```{verbatim}
+bash$ R
+R version 4.3.2 (2023-10-31) -- "Eye Holes"
+Copyright (C) 2023 The R Foundation for Statistical Computing
+Platform: x86_64-redhat-linux-gnu (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> 1+1
+[1] 2
+```
+
+But we recommend using the RStudio Desktop, an IDE for R available at [posit.co](https://posit.co/downloads/).
+
+![](rstudio-windows.png)
+
+
+### R code for installing packages needed today
+
+```{r}
+#| label: install packages
+#| eval: false
+#| code-fold: false
+install.packages(c("BiocManager", "quarto"))
+BiocManager::install("pheatmap")
+```
+
+{{< pagebreak >}}
+
+## Exercise 1
+
+1. Clone the [gitlab repository for Week 1](https://gitlab.epfl.ch/genomics-and-bioinformatics/course-data-2024.git) into your working directory
+2. Open the file [ExercisesWeek1.qmd](https://gitlab.epfl.ch/genomics-and-bioinformatics/course-data-2024/-/blob/main/week1/ExercisesWeek1.qmd) in RStudio (this is the file used to generate the document you are currently reading...)
+3. Execute the following code blocks and understand what they are doing.
+
+Read the data from the tab-delimited file *GeneExpressionData.txt*:
+```{r}
+#| label: load data
+#| warning: false
+data = read.delim("GeneExpressionData.txt", row.names=1)
+```
+If the file is not found, check your path:
+```{r}
+#| label: path functions
+#| eval: false
+getwd()
+setwd("/YOUR/PATH/TO/GITLAB/REPO")
+dir()
+```
+First look at the data (notice that rows and columns have names!):
+```{r}
+#| label: data check
+#| eval: false
+dim(data)
+#gives the first one
+head(data)
+#all columns of those rows
+data[1:4, ]
+data$id 
+data$C1[1]
+data$C2[3:10]
+data["ATP2A3",]
+vector = data$C1
+vector[4]
+```
+Compute some basic statistics:
+```{r}
+#| label: summary stats
+#| eval: false
+summary(data)
+summary(data$C1)
+mean(data$C2)
+median(log(data$C2))
+sapply(data[1:10,], min)
+sapply(data, max)
+apply(data, 1, mean)
+apply(data, 2, sd)
+
+?sd
+```
+Elementary data transformation (are all ratios well-defined?):
+```{r}
+#| label: data manips
+#| eval: false
+any(data$C2==0) 
+which(data$C2==0)
+ratios = log2(data$C1/data$C2)
+geomMeans = sqrt(data$C1*data$C2)
+```
+Plot the data
+```{r}
+#| label: plots
+#| warning: false
+plot(data$C1, data$C2, log='xy', pch=20, main='', xlab='C1', ylab='C2')
+h1 = hist(log2(data$C1), breaks=30, main='', xlab='log2 values')
+hist(log2(data$C2), br=h1$breaks, add=T, col=2)
+```
+
+{{< pagebreak >}}
+
+## Exercise 2
+
+1. Load the second dataset *leukemiaExpressionSubset.rds* (in compressed [RDS format](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/readRDS)):
+```{r}
+#| label: load leukemia
+#| warning: false
+library(pheatmap)
+data = readRDS("leukemiaExpressionSubset.rds")
+```
+2. The sample (column) name contains the leukemia type annotation. 
+Let us create an annotation table by splitting the sample type and the sample number in different columns:
+```{r}
+#| label: extract sample type
+#| warning: false
+annotations = data.frame(
+            LeukemiaType = substr(colnames(data),1,3),
+            row.names = substr(colnames(data),10,13))
+colnames(data) = rownames(annotations)
+```
+3. Log-transform the data, generate scatter plots of sample pairs and a boxplot of distributions:
+```{r}
+#| label: pairs and box plots
+#| eval: false
+#| warning: false
+logdata = log2(data)
+meddata = apply(logdata, 2, median)
+logdata = sweep(logdata, 2, meddata, "-")
+typeCols = c("ALL"='red', "AML"='magenta', "CLL"='blue', "CML"='cyan', "NoL"='gray')
+par(las=1, cex=1.1, lwd=2, lty=1, pch=20)
+pairs(logdata[,1:5])
+boxplot(logdata, las=2, lty=1, lwd=2, col=typeCols[annotations$LeukemiaType], pch=20)
+```
+4. Create a clustered "heatmap" of the data:
+```{r}
+#| label: cluster and heatmap
+#| eval: false
+#| warning: false
+pheatmap(logdata, show_rownames=F, annotation_col=annotations, scale='none', 
+         clustering_distance_cols='correlation', clustering_method='complete',
+         annotation_colors=list(LeukemiaType=typeCols))
+```
+5. Save the transformed data to a tab-delimited text file:
+```{r}
+#| label: save to file
+#| eval: false
+#| warning: false
+write.table(logdata, file = "testoutput.txt", sep="\t", quote=F)
+```
+
+{{< pagebreak >}}
+
+## Exercise 3
+
+The gene *BCL2A1* has been implicated in many cancers, including Leukemia.
+
+Go to the [Ensembl](https://www.ensembl.org/Homo_sapiens)
+site and search for the identifier of this gene (similar to ENSG00000XXXXXX).
+Extract the corresponding row from the log-data matrix, and show that it is disregulated in *acute leukemia (ALL, AML)*:
+```{r}
+#| label: genome browsers
+#| eval: false
+#| warning: false
+geneid = "ENSG00000XXXXXX"
+bcl2a1_expression = as.numeric(logdata[geneid,])
+boxplot(bcl2a1_expression~annotations$LeukemiaType)
+```
+
+Use the [UCSC genome browser](https://genome-euro.ucsc.edu/) to answer the following questions:
+
+1. Which strand is human BCL2A1 on? Human BCL2A1 is on the reverse strand
+2. How many splice variants (isoforms) exist according to the *NCBI RefSeq* and to *GENCODE*? Choosing weird stuff in the web, there are 2 isoforms according to the NCBI RefSeq and 3 according to GENCODE (the last one only an exon no introns).
+3. What is the next protein-coding gene upstream of BCL2A1? and downstream? Como está en el reverse, las flechas van del 5 al 3, pero como upstream es del 3 a 5, upstream será hacia la derecha. Entonces, the next protein-coding gene upstream of BCL2A1 (in the direction of transcription) is ZFAND6, and downstream is MTHFS.
+4. Can you find a binding site for [NFKB1](https://www.genecards.org/cgi-bin/carddisp.pl?gene=NFKB1) (nuclear factor kappa B subunit 1, a transcription factor) less than 10kb upstream of BCL2A1, within a Dnase-1 hypersensitive site bearing an H3K27ac mark? Hint: look at the tracks *ReMap ChIP-seq* and *Encode Regulation*. We need to choose in the web, and see if there are marks, there is a binding site for NFKB1 (nuclear factor kappa B subunit 1, a transcription factor) less than 10kb upstream of BCL2A1, within a Dnase-1 hypersensitive site bearing an H3K27ac mark.
